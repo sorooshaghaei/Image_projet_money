@@ -42,9 +42,8 @@ This repository contains the **TER (Travail d’Étude et de Recherche)** projec
   * NumPy
   * OpenCV
   * Matplotlib
-  * Scikit-learn
-  * PyTorch / TensorFlow (if applicable)
   * Jupyter Notebook (for experiments)
+  * (this list will get updated)
 
 ---
 
