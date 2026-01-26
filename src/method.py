@@ -24,7 +24,7 @@ def find_project_root() -> Path:
     return p
 
 
-def load_image() -> np.ndarray:
+def load_images():
     root = find_project_root()
     images = sorted(
         p for p in (root / "data" / "images").rglob("*")
@@ -32,12 +32,7 @@ def load_image() -> np.ndarray:
     )
     if not images:
         raise RuntimeError("No images found")
-
-    img = cv2.imread(str(images[11]))
-    if img is None:
-        raise RuntimeError("Failed to load image")
-
-    return img
+    return images
 
 
 def resize_keep_aspect(img: np.ndarray, max_h: int) -> np.ndarray:
@@ -113,27 +108,61 @@ def cluster_foreground(mask, hsv):
 
     return out
 
+# =========================
+# CONTOURS
+# =========================
+def find_contours_from_mask(mask: np.ndarray):
+    # бинаризация на всякий случай (mask уже 0/255)
+    _, bin_mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
 
-def edge_map(labels: np.ndarray) -> np.ndarray:
-    e = np.zeros_like(labels)
-    e[:, 1:] |= labels[:, 1:] != labels[:, :-1]
-    e[1:, :] |= labels[1:, :] != labels[:-1, :]
-    return (e * 255).astype(np.uint8)
+    contours, _ = cv2.findContours(
+        bin_mask,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    # очень мягкая фильтрация по площади
+    h, w = mask.shape
+    min_area = 0.001 * h * w
+
+    contours = [c for c in contours if cv2.contourArea(c) > min_area]
+    return contours
 
 
 # =========================
-# MAIN
+# MAIN (with navigation)
 # =========================
-img = resize_keep_aspect(load_image(), MAX_HEIGHT)
-hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+images = load_images()
+idx = 0
 
-mask = foreground_mask(hsv)
-clusters = cluster_foreground(mask, hsv)
-edges = edge_map(clusters)
+while True:
+    img = cv2.imread(str(images[idx]))
+    img = resize_keep_aspect(img, MAX_HEIGHT)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
 
-cv2.imshow("Image", img)
-cv2.imshow("Mask", mask)
-cv2.imshow("Clusters", clusters)
-cv2.imshow("Edges", edges)
-cv2.waitKey(0)
+    mask = foreground_mask(hsv)
+    clusters = cluster_foreground(mask, hsv)
+    
+    contours = find_contours_from_mask(mask)
+
+    vis = img.copy()
+    cv2.drawContours(vis, contours, -1, (0, 255, 0), 2)
+
+    cv2.imshow("Contours", vis)
+
+
+    cv2.imshow("Image", img)
+    cv2.imshow("Mask", mask)
+    cv2.imshow("Clusters", clusters)
+    cv2.imshow("Contours", vis)
+
+    key = cv2.waitKey(0) & 0xFF
+
+    if key in (27, ord('q')):          # ESC / q
+        break
+    elif key in (ord('d'), 83):        # d / →
+        idx = (idx + 1) % len(images)
+    elif key in (ord('a'), 81):        # a / ←
+        idx = (idx - 1) % len(images)
+
 cv2.destroyAllWindows()
