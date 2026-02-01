@@ -15,6 +15,7 @@ This repository contains the **TER (Travail d’Étude et de Recherche)** projec
 │   └── annotations/   # Annotations / labels (ignored in git, except .gitkeep)
 │
 ├── src/               # Source code (Python)
+│   ├── load_data.py 
 │
 ├── report/            # Slides and notes for the final presentation
 │
