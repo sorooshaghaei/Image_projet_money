@@ -1,4 +1,4 @@
-# load_data.py
+# utils.py --> loading data
 from pathlib import Path
 import cv2
 import numpy as np
