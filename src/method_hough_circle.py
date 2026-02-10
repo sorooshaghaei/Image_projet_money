@@ -22,7 +22,7 @@ class DetectionConfig:
     HOUGH_MIN_DIST: int = 70
     HOUGH_PARAM1: int = 50
     HOUGH_PARAM2: int = 45
-    HOUGH_MIN_RADIUS: int = 10
+    HOUGH_MIN_RADIUS: int = 16
     HOUGH_MAX_RADIUS: int = 150
 
     # Visualization
@@ -288,7 +288,7 @@ DATA_ROWS = [
 def main():
     try:
         # --- CONFIGURATION ---
-        IMAGE_DIRECTORY = "/home/max/Desktop/Coding/Github/Image_projet_money/data/images"
+        IMAGE_DIRECTORY = "/Users/sigmoid/Desktop/Coding/Git/Image_projet_money/data/images"
         
         config = DetectionConfig()
         
