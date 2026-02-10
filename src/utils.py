@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", "webp")
 BASE_DIR = Path(__file__).resolve().parent  # folder containing this file
 
 
@@ -19,7 +19,11 @@ def list_images(image_dir="data/images", recursive=True):
         raise FileNotFoundError(f"Directory not found: {image_dir}")
 
     pattern = "**/*" if recursive else "*"
-    paths = [p for p in image_dir.glob(pattern) if p.is_file() and p.suffix.lower() in IMG_EXTS]
+    paths = [
+        p
+        for p in image_dir.glob(pattern)
+        if p.is_file() and p.suffix.lower() in IMG_EXTS
+    ]
     paths.sort()
     if not paths:
         raise FileNotFoundError(f"No images found in: {image_dir}")
@@ -64,7 +68,9 @@ def resize_max(img_rgb, max_size=None):
     return cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
-def load_dataset(image_dir="../data/images", recursive=True, max_size=None, alpha_bg=(255, 255, 255)):
+def load_dataset(
+    image_dir="../data/images", recursive=True, max_size=None, alpha_bg=(255, 255, 255)
+):
     paths = list_images(image_dir, recursive=recursive)
 
     images_rgb, ok_paths = [], []
@@ -77,13 +83,17 @@ def load_dataset(image_dir="../data/images", recursive=True, max_size=None, alph
         images_rgb.append(resize_max(img, max_size=max_size))
         ok_paths.append(p)
 
-    print(f"[INFO] loaded {len(images_rgb)} / {len(paths)} images from {resolve_path(image_dir)}")
+    print(
+        f"[INFO] loaded {len(images_rgb)} / {len(paths)} images from {resolve_path(image_dir)}"
+    )
     if bad:
         print(f"[WARN] {bad} images could not be read.")
     return images_rgb, ok_paths
 
 
-def save_debug_grid(images_rgb, paths=None, out_path="debug_grid.png", cols=4, max_items=16, title=None):
+def save_debug_grid(
+    images_rgb, paths=None, out_path="debug_grid.png", cols=4, max_items=16, title=None
+):
     out_path = resolve_path(out_path)
 
     n = min(len(images_rgb), max_items)
@@ -111,6 +121,9 @@ def save_debug_grid(images_rgb, paths=None, out_path="debug_grid.png", cols=4, m
 
 
 if __name__ == "__main__":
-    imgs, ps = load_dataset("../data/images", recursive=True, max_size=800, alpha_bg=(255, 255, 255))
+    imgs, ps = load_dataset(
+        "../data/images", recursive=True, max_size=800, alpha_bg=(255, 255, 255)
+    )
+
     # uncomment to generate preview sheet next to load_data.py
-    # save_debug_grid(imgs, ps, out_path="debug_grid.png", cols=4, max_items=16, title="Loaded images")
+    save_debug_grid(imgs, ps, out_path="debug_grid.png", cols=4, max_items=16, title="Loaded images")
