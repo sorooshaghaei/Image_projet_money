@@ -12,10 +12,12 @@ The pipeline follows a classical computer vision workflow:
 
 1. Input image acquisition  
 2. Preprocessing  
-3. Edge detection  
-4. Morphological processing  
-5. ROI extraction  
-6. (Next steps: feature extraction / classification / analysis)
+3. Grayscale conversion  
+4. Conditional inversion  
+5. Noise reduction  
+6. Foreground–background separation  
+7. ROI extraction  
+8. (Next steps: feature extraction / analysis)
 
 Each step is designed to be modular, reproducible, and adjustable.
 
@@ -41,149 +43,114 @@ Conversion of RGB images to grayscale.
 ### Justification
 - Reduces computational complexity  
 - Removes color dependency  
-- Coin detection relies primarily on shape and contrast  
-- Simplifies edge detection and segmentation  
+- Coin detection relies primarily on shape and intensity  
+- Simplifies further processing  
 
-Grayscale images preserve intensity information required for contour and edge-based methods.
+Grayscale images preserve luminance information required for segmentation and object extraction.
 
 ---
 
-## 5. Step 3 – Image Inversion (Conditional Step)
+## 4. Step 3 – Image Inversion (Conditional Step)
 
 ### Purpose
-Invert pixel intensities depending on contrast configuration between:
+Invert pixel intensities depending on the contrast configuration between:
 - Coin
 - Background
 
 ### When inversion SHOULD be applied
-- Coin is darker than background
-- Edge detection fails to highlight coin boundaries
-- Thresholding or edge detection performs better on bright foregrounds
-
-In these cases, inversion improves:
-- Edge visibility
-- Contrast separation
-- Stability of contour extraction
+- Coin is darker than background  
+- Coin boundaries are poorly distinguishable  
+- Bright foreground improves separation  
 
 ### When inversion SHOULD NOT be applied
-- Coin is already brighter than background
-- Contrast is sufficient for edge detection
-- Inversion would amplify background noise
-- Object/background relationship is already optimal
+- Coin is already brighter than background  
+- Contrast is sufficient  
+- Inversion increases background noise  
 
 ### Decision Rule
-Image inversion should be:
-- Tested visually
-- Applied only if it improves edge clarity
-- Treated as a conditional preprocessing step
+Inversion is a **conditional preprocessing step** and should be:
+- Evaluated visually  
+- Applied only if it improves contrast  
+- Used to simplify further segmentation  
+
+### Important Note
+After this step, **the primary objective becomes separating coins from the background**.  
+All subsequent processing is focused on foreground–background separation, not edge detection.
 
 ---
 
-## 4. Step 4 – Noise Reduction (Bilateral Filtering)
+## 5. Step 4 – Noise Reduction (Median Filtering)
 
-### Selected Method: **Bilateral Filter**
-
-### Why bilateral filtering is used instead of Gaussian blur
-
-Unlike Gaussian blur, **bilateral filtering smooths the image while preserving edges**.
-
-This is particularly important for **coin detection**, where:
-- Coin boundaries must remain sharp
-- Shape integrity is critical
-- Edge continuity directly impacts contour detection
-
-### Advantages for this project
-- Reduces noise without blurring object borders  
-- Preserves circular contours of coins  
-- Prevents loss of edge information  
-- Improves reliability of later edge detection  
-
-### Why Gaussian blur is not ideal here
-- Smooths both noise and edges
-- Can weaken coin boundaries
-- May cause merging between coin and background
-- Reduces contour accuracy
-
-### Conclusion
-Bilateral filtering is better suited for:
-- Objects with strong, meaningful edges
-- Shape-based detection tasks
-- Scenarios where boundary preservation is critical
-
----
-
-## 6. Step 5 – Edge Detection
-
-### Selected Method: Canny Edge Detection
+### Selected Method: **Median Filter**
 
 ### Justification
-- Multi-stage detection (gradient → suppression → hysteresis)
-- Produces thin and continuous edges
-- Robust to noise when preceded by bilateral filtering
-- Well-suited for circular object detection
+Median filtering is preferred over Gaussian and bilateral filtering.
 
-### Why not Sobel?
-- Produces thick edges
-- Sensitive to noise
-- No hysteresis or edge linking
+### Why NOT Gaussian or Bilateral Filtering
+- Gaussian blur smooths edges and weakens object boundaries  
+- Bilateral filtering:
+  - Is computationally heavier  
+  - Preserves unwanted texture  
+  - Is sensitive to background patterns  
 
-### Why not simple thresholding?
-- Sensitive to lighting
-- Fails when foreground and background intensities overlap
-- Not reliable for complex textures
+Textured backgrounds (e.g. wood, surfaces) can strongly affect detection quality.
+
+### Advantages of Median Filtering
+- Removes impulse and texture noise  
+- Preserves object boundaries  
+- Reduces background influence  
+- More stable for segmentation  
+- Well-suited for coin-like homogeneous regions  
 
 ---
 
-## 7. Step 6 – Morphological Processing
+## 6. Step 5 – Foreground / Background Separation
 
 ### Objective
-Refine edge maps and prepare for ROI extraction.
-
-### Operations
-- **Dilation**: closes gaps in contours  
-- **Erosion**: removes isolated noise  
-- **Opening**: removes small artifacts  
-- **Closing**: fills internal gaps in coin contours  
-
-### Purpose
-- Ensure closed coin boundaries  
-- Improve contour stability  
-- Prepare for accurate ROI extraction  
-
----
-
-## 8. Step 7 – ROI Extraction (Planned)
+Isolate coin regions from the background.
 
 ### Goals
-- Detect coin contours
-- Filter candidates using:
-  - Area
-  - Circularity
-  - Shape consistency
-- Extract bounding boxes or masks
+- Suppress background textures  
+- Highlight coin regions  
+- Produce a clean binary or semi-binary representation  
+
+### Possible Techniques
+- HSV Color Filtering  
+- HSV Color Clustering using K-Means
+- Hough circle
+
+No edge detection or morphological processing is applied at this stage.
+
+---
+
+## 7. Step 6 – ROI Extraction (Planned)
+
+### Goals
+- Detect candidate coin regions  
+- Extract bounding boxes or masks  
+- Filter regions using:
+  - Area  
+  - Shape consistency  
+  - Optional circularity constraints  
 
 ### Possible Approaches
-- Contour detection
-- Connected component analysis
-- Shape filtering (circularity metrics)
+- TODO
 
 ---
 
-## 9. Next Steps
+## 8. Next Steps
 
-- ROI validation
-- Feature extraction
-- Classification or measurement
-- Performance evaluation
-- Final visualization and reporting
-
----
-
-## 10. Notes
-
-- Each step will be implemented as a separate module  
-- Parameters will be configurable  
-- Intermediate outputs may be saved for debugging  
-- Pipeline is designed to be reproducible and extensible  
+- ROI validation  
+- Feature extraction  
+- Measurement or classification  
+- Performance evaluation  
+- Visualization and reporting  
 
 ---
+
+## 9. Notes
+
+- Each step is implemented as a separate module  
+- Parameters are configurable  
+- Intermediate results may be saved for debugging  
+- The pipeline is designed to be reproducible and extensible  
