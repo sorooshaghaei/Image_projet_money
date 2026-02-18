@@ -5,6 +5,8 @@ from typing import Tuple
 
 @dataclass(frozen=True)
 class DetectionConfig:
+    """Tunable parameters for circle detection and post-filtering."""
+
     TARGET_WIDTH: int = 800
     BLUR_KERNEL_SIZE: int = 15
 
@@ -14,12 +16,30 @@ class DetectionConfig:
     HOUGH_PARAM2: int = 45
     HOUGH_MIN_RADIUS: int = 10
     HOUGH_MAX_RADIUS: int = 150
+    HOUGH_LOOSE_DP_SCALE: float = 1.0
+    HOUGH_LOOSE_MIN_DIST_SCALE: float = 0.9
+    HOUGH_LOOSE_PARAM2_SCALE: float = 0.85
+
+    CONTOUR_MIN_CIRCULARITY: float = 0.84
+    CONTOUR_MIN_RADIUS_SCALE: float = 0.85
+    CONTOUR_MAX_RADIUS_SCALE: float = 1.20
+    CONTOUR_MIN_FILL_RATIO: float = 0.72
+
+    MERGE_CENTER_DIST_SCALE: float = 0.50
+    MERGE_RADIUS_DIFF_SCALE: float = 0.50
+
+    CIRCLE_MIN_ANGULAR_COVERAGE: float = 0.20
+    CIRCLE_MIN_CONTRAST: float = 0.055
+    CIRCLE_MIN_SUPPORT_SCORE: float = 0.34
+    LOOSE_MIN_SUPPORT_SCORE: float = 0.62
 
     VALID_EXTENSIONS: Tuple[str, ...] = (".jpg", ".jpeg", ".png", ".webp")
 
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    """Runtime options for batch evaluation and interactive visualization."""
+
     IMAGE_DIRECTORY: str = field(default_factory=lambda: _find_image_directory())
     BROWSE_TUNE: bool = True
     SAVE_STEPS: bool = False
@@ -27,6 +47,12 @@ class RuntimeConfig:
 
 
 def _find_image_directory() -> str:
+    """
+    Locate `data/images` automatically from the current source location.
+
+    Why auto-discovery:
+    - Makes the project runnable from IDE, terminal, or notebooks without manual path edits.
+    """
     current = Path(__file__).resolve()
     project_name = "image_projet_money"
 

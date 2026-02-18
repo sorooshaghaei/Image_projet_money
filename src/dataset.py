@@ -4,6 +4,16 @@ import pandas as pd
 
 
 class DatasetRepository:
+    """
+    In-code annotation table used as the reference dataset.
+
+    Columns:
+    - image: filename
+    - pieces: expected number of coins
+    - value_eur: expected total value in EUR (can be None when missing)
+    - group: subfolder/group name in `data/images`
+    """
+
     DATA_ROWS: List[List[object]] = [
         ["exemple1.png", 4, 7.25, "gp1"],
         ["10.jpg", 9, 3.13, "gp5"],
@@ -115,4 +125,5 @@ class DatasetRepository:
     ]
 
     def to_dataframe(self) -> pd.DataFrame:
+        """Return annotations as a pandas DataFrame for the evaluation loop."""
         return pd.DataFrame(self.DATA_ROWS, columns=["image", "pieces", "value_eur", "group"])

@@ -6,6 +6,8 @@ import numpy as np
 
 @dataclass
 class PipelineStep:
+    """One visual stage of the pipeline (used for debug/visualization panels)."""
+
     name: str
     image: np.ndarray
     cmap: str
@@ -13,6 +15,15 @@ class PipelineStep:
 
 @dataclass
 class PipelineResult:
+    """
+    Full output bundle produced for one image.
+
+    Why this object exists:
+    - Keeps detection/classification outputs together.
+    - Gives visualization and reporting code a stable contract.
+    - Avoids fragile positional tuples when the pipeline evolves.
+    """
+
     steps: List[PipelineStep]
     coin_count: int
     is_inverted: bool
