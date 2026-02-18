@@ -63,8 +63,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-*(If `requirements.txt` is not yet available, install libraries manually as needed.)*
-
 ---
 
 ## Data Management
@@ -111,4 +109,3 @@ pip install -r requirements.txt
 ## License
 
 This project is for **academic use only**.
-
