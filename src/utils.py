@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", "webp")
+IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
 BASE_DIR = Path(__file__).resolve().parent  # folder containing this file
 
 
