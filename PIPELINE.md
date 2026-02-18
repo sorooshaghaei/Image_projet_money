@@ -1,156 +1,141 @@
-# PIPELINE.md  
-**Image Processing and Analysis Pipeline – TER M1 (VMI)**
+# Coin Detection Pipeline
+Current implementation overview for the euro coin project.
 
-This document describes the planned processing pipeline for the project.  
-The objective is to progressively extract a **Region of Interest (ROI)** from input images using classical computer vision techniques, with a focus on **coin detection**.
+This document describes the **implemented pipeline** (not only a plan), with references to source modules.
 
----
+## 1. Objective
+For each input image:
+- detect all visible coins,
+- estimate denomination for each coin,
+- compute total value in EUR,
+- expose debug artifacts for analysis.
 
-## 1. Global Pipeline Overview
+## 2. High-Level Flow
+```text
+Input BGR image
+  -> Resize to fixed width
+  -> Grayscale normalize (+ optional inversion if dark)
+  -> Median blur
+  -> Circle ensemble detection
+       (strict Hough + loose Hough + contour backup)
+  -> Per-coin center/ring color features in LAB/HSV
+  -> Color-group scoring and denomination candidates
+  -> Global scale fit (px/mm) across all detected coins
+  -> Final per-coin denomination + total value
+```
 
-The pipeline follows a classical computer vision workflow:
+Main orchestrator:
+- `src/processor.py` (`CoinProcessor`)
 
-1. Input image acquisition  
-2. Preprocessing  
-3. Grayscale conversion  
-4. Conditional inversion  
-5. Noise reduction  
-6. Foreground–background separation  
-7. ROI extraction  
-8. (Next steps: feature extraction / analysis)
+## 3. Stage-by-Stage Details
+### 3.1 Preprocessing
+Module: `src/processor.py`
+- Resize image to `DetectionConfig.TARGET_WIDTH`.
+- Convert to grayscale and normalize to `[0, 255]`.
+- If mean brightness is low, apply inversion.
+- Apply median blur (`BLUR_KERNEL_SIZE`) for robust circle gradients.
 
-Each step is designed to be modular, reproducible, and adjustable.
+Why:
+- normalizes camera variability,
+- improves circle detector stability,
+- keeps edges less noisy than raw grayscale.
 
----
+### 3.2 Circle Detection (Geometry)
+Module: `src/processor_circles.py` (`CircleDetector`)
 
-## 2. Step 1 – Image Acquisition
+Ensemble strategy:
+- strict Hough pass (high precision),
+- loose Hough pass (recall recovery),
+- contour proposals as backup.
 
-**Input:**
-- Raw RGB images stored in `data/images/`
-- Format: PNG / JPG  
-- Resolution may vary
+Post-processing:
+- merge near-duplicate circles,
+- support filtering with:
+  - angular edge coverage on ring,
+  - inner/outer contrast score,
+- nested-overlap suppression to remove redundant inner circles.
 
-**Goal:**
-Ensure all images are readable, correctly loaded, and consistent before processing.
+Why:
+- pure single-pass Hough is unstable across all groups,
+- ensemble + support filtering improves robustness.
 
----
+### 3.3 Color Features and Priors
+Module: `src/processor_color.py` (`CoinColorClassifier`)
 
-## 3. Step 2 – Grayscale Conversion
+Per detected circle:
+- build masks:
+  - full coin,
+  - center region,
+  - ring annulus,
+- compute LAB material scores (bronze/gold/silver),
+- compute region HSV/LAB stats (saturation/chroma/hue/yellow/silver cues),
+- estimate bimetal confidence and directional evidence (1 EUR vs 2 EUR tendency).
 
-### Description
-Conversion of RGB images to grayscale.
+Output:
+- color-group scores,
+- candidate denomination list used as a soft prior.
 
-### Justification
-- Reduces computational complexity  
-- Removes color dependency  
-- Coin detection relies primarily on shape and intensity  
-- Simplifies further processing  
+Why:
+- 1c/2c/5c and 10c/20c/50c can be guided by color family,
+- 1 EUR / 2 EUR require center-vs-ring evidence.
 
-Grayscale images preserve luminance information required for segmentation and object extraction.
+### 3.4 Denomination by Global Scale Fit
+Module: `src/processor_scale.py` (`ScaleValueClassifier`)
 
----
+Method:
+- generate scale hypotheses from observed diameters and official euro diameters,
+- score each hypothesis with per-coin relative error,
+- apply soft penalty when denomination falls outside color candidates,
+- optionally refine scale via least squares.
 
-## 4. Step 3 – Image Inversion (Conditional Step)
+Why:
+- one global scale enforces physical consistency across all coins in one image,
+- avoids independent per-coin assignments that conflict.
 
-### Purpose
-Invert pixel intensities depending on the contrast configuration between:
-- Coin
-- Background
+## 4. Outputs
+Data structure: `src/models.py` (`PipelineResult`)
 
-### When inversion SHOULD be applied
-- Coin is darker than background  
-- Coin boundaries are poorly distinguishable  
-- Bright foreground improves separation  
+Key fields:
+- `coin_count`
+- `coin_labels`
+- `coin_color_labels`
+- `coin_candidate_denoms`
+- `estimated_value_eur`
+- `steps` (visual debug pipeline stages)
 
-### When inversion SHOULD NOT be applied
-- Coin is already brighter than background  
-- Contrast is sufficient  
-- Inversion increases background noise  
+## 5. Configurable Parameters
+Module: `src/config.py` (`DetectionConfig`)
 
-### Decision Rule
-Inversion is a **conditional preprocessing step** and should be:
-- Evaluated visually  
-- Applied only if it improves contrast  
-- Used to simplify further segmentation  
+Groups of parameters:
+- preprocessing: blur kernel, target width,
+- Hough detection: `HOUGH_*`,
+- contour fallback: `CONTOUR_*`,
+- candidate merge/suppression: `MERGE_*`,
+- support thresholds: `CIRCLE_*`, `LOOSE_*`.
 
-### Important Note
-After this step, **the primary objective becomes separating coins from the background**.  
-All subsequent processing is focused on foreground–background separation, not edge detection.
+## 6. Evaluation Entry Point
+Batch app:
+- `main.py` -> `src/runner.py` (`PipelineApp`)
 
----
+Evaluation uses:
+- annotation table from `src/dataset.py`,
+- image resolution via `src/io_utils.py` (`ImagePathResolver`),
+- summary metrics for count and value errors.
 
-## 5. Step 4 – Noise Reduction (Median Filtering)
+## 7. Annotation Contract
+Current ground truth source:
+- `src/dataset.py` (`DatasetRepository.DATA_ROWS`)
 
-### Selected Method: **Median Filter**
+For this project size, no separate external annotation schema is required.
+Keep image-level ground truth directly in `DatasetRepository.DATA_ROWS`.
 
-### Justification
-Median filtering is preferred over Gaussian and bilateral filtering.
+## 8. Known Limitations
+- very strong reflections and heavy occlusions still reduce reliability,
+- touching coins can still be hard in some scenes,
+- cross-device color shifts may affect color priors.
 
-### Why NOT Gaussian or Bilateral Filtering
-- Gaussian blur smooths edges and weakens object boundaries  
-- Bilateral filtering:
-  - Is computationally heavier  
-  - Preserves unwanted texture  
-  - Is sensitive to background patterns  
-
-Textured backgrounds (e.g. wood, surfaces) can strongly affect detection quality.
-
-### Advantages of Median Filtering
-- Removes impulse and texture noise  
-- Preserves object boundaries  
-- Reduces background influence  
-- More stable for segmentation  
-- Well-suited for coin-like homogeneous regions  
-
----
-
-## 6. Step 5 – Foreground / Background Separation
-
-### Objective
-Isolate coin regions from the background.
-
-### Goals
-- Suppress background textures  
-- Highlight coin regions  
-- Produce a clean binary or semi-binary representation  
-
-### Possible Techniques
-- HSV Color Filtering  
-- HSV Color Clustering using K-Means
-- Hough circle
-
-No edge detection or morphological processing is applied at this stage.
-
----
-
-## 7. Step 6 – ROI Extraction (Planned)
-
-### Goals
-- Detect candidate coin regions  
-- Extract bounding boxes or masks  
-- Filter regions using:
-  - Area  
-  - Shape consistency  
-  - Optional circularity constraints  
-
-### Possible Approaches
-- TODO
-
----
-
-## 8. Next Steps
-
-- ROI validation  
-- Feature extraction  
-- Measurement or classification  
-- Performance evaluation  
-- Visualization and reporting  
-
----
-
-## 9. Notes
-
-- Each step is implemented as a separate module  
-- Parameters are configurable  
-- Intermediate results may be saved for debugging  
-- The pipeline is designed to be reproducible and extensible  
+## 9. Next Improvements
+- integrate robust specular highlight rejection in color stats,
+- add stronger touching-coin splitting fallback,
+- expand benchmark reporting by group and lighting condition,
+- optionally migrate annotations to CSV only if dataset complexity increases.

@@ -1,111 +1,81 @@
 # Image_projet_money
-Maksym DOLHOV, Mehdi AGHAEI and Nima DAVARI
-## TER M1
+Euro coin detection and value estimation project (TER M1, Universite Paris Cite).
 
-This repository contains the **TER (Travail d’Étude et de Recherche)** project for **Master 1 – VMI - Analyse d'Image Cours**.  
+Authors: Maksym DOLHOV, Mehdi AGHAEI, Nima DAVARI.
 
----
+## What This Project Does
+Given one image with euro coins:
+- detect coin circles,
+- classify likely material groups (bronze / gold / bimetal),
+- assign denominations with a global geometric consistency fit,
+- estimate total value in EUR.
 
-## Repository Structure
+Core design:
+- geometry-first detection (circle ensemble),
+- color as a soft prior (center-ring LAB/HSV features),
+- one shared px/mm scale for denomination assignment.
 
-```bash
-.
+## Current Project Structure
+```text
+Image_projet_money/
+├── main.py
+├── README.md
+├── PIPELINE.md
+├── requirements.txt
 ├── data/
-│   ├── images/        # Image dataset (ignored in git, except .gitkeep)
-│   └── annotations/   # Annotations / labels (ignored in git, except .gitkeep)
-│
-├── src/               # Source code (Python)
-│   ├── load_data.py 
-│
-├── report/            # Slides and notes for the final presentation
-│
-├── .gitignore
-└── README.md
+│   ├── images/                 # local image dataset (not tracked) -> gitignored
+│   └── annotations/            # local/optional annotation files (not tracked)
+├── report/
+│   ├── project_methods_logic.ipynb
+│   └── progress_hough_hsv_report.ipynb
+└── src/
+    ├── config.py               # tunable runtime + detection config
+    ├── dataset.py              # current in-code annotation table
+    ├── io_utils.py             # image path resolution across groups
+    ├── models.py               # PipelineResult / PipelineStep
+    ├── coin_metadata.py        # denomination + color mapping constants
+    ├── processor.py            # end-to-end orchestration
+    ├── processor_circles.py    # circle detection and filtering
+    ├── processor_color.py      # center-ring LAB/HSV color logic
+    ├── processor_scale.py      # global scale and denomination fitting
+    ├── runner.py               # batch evaluation app
+    └── visualization.py        # interactive tuning / debug visualization
 ```
 
----
-
-## Project Goals
-
-* Implement computer vision and machine learning methods related to the chosen TER topic
-* Perform data preprocessing, analysis, and experimentation
-* Produce clear and reproducible code
-* Prepare a final report and presentation for the oral defense
-
----
-
-## Technologies
-
-* **Language**: Python 3
-* **Environment**: macOS / windows
-* **Main libraries** (depending on the topic):
-
-  * NumPy
-  * OpenCV
-  * Matplotlib
-  * Jupyter Notebook (for experiments)
-  * (this list will get updated)
-
----
-
-## Setup
-
-### 1. Create a virtual environment
-
+## Installation
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-### 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
----
+## Run
+```bash
+python main.py
+```
 
-## Data Management
+`main.py` runs `src.runner.PipelineApp`, which:
+- loads annotations from `src/dataset.py`,
+- processes dataset images,
+- prints count/value metrics,
+- can open the interactive tuning browser (depending on `RuntimeConfig`).
 
-* The `data/images/` and `data/annotations/` folders are **ignored by git** to avoid pushing large datasets.
-* Only `.gitkeep` files are versioned to preserve the directory structure.
-* Datasets must be added locally and never pushed to the remote repository.
+## Data and Annotations
+Images are expected in:
+- `data/images/<group>/<image_name>`
 
----
+Current ground truth is in:
+- `src/dataset.py` (`DatasetRepository.DATA_ROWS`)
 
-## Usage
+For this project, annotations are managed directly in:
+- `src/dataset.py` (`DatasetRepository.DATA_ROWS`)
 
-* All source code must be placed in the `src/` directory.
-* Scripts should be modular, documented, and reproducible.
-* Experiments and temporary files should not be committed unless explicitly required.
+## Reports
+Notebooks in `report/` are presentation-ready:
+- `project_methods_logic.ipynb`: final architecture and method logic
+- `progress_hough_hsv_report.ipynb`: progression from early attempts to final pipeline
 
----
-
-## Report & Defense
-
-* The `report/` directory contains:
-
-  * Presentation slides
-  * Notes for the oral defense
-* Temporary files (LaTeX, Office cache files) are ignored by git.
-
----
-
-## Collaboration Rules
-
-* Commit frequently with clear messages
-* Do not commit datasets or generated results unless agreed
-* Keep code clean, commented, and structured
-
----
-
-## Authors
-
-* Maksym DOLHOV, Mehdi AGHAEI and Nima DAVARI
-* Université Paris Cité
-
----
-
-## License
-
-This project is for **academic use only**.
+## Notes
+- Heavy image datasets are intentionally not committed.
+- Keep code modular and reproducible.
+- Keep `src/dataset.py` synchronized with your local image folders.
