@@ -22,7 +22,11 @@ class PipelineVisualizer:
         rows = ceil(n / cols)
         fig, axes = plt.subplots(rows, cols, figsize=(4.5 * cols, 4.0 * rows))
         fig.suptitle(
-            f"{result.source_filename} | pred={result.coin_count} | inverted={result.is_inverted}",
+            (
+                f"{result.source_filename} | pred={result.coin_count} | "
+                f"labeled={result.labeled_coin_count} | value={result.estimated_value_eur:.2f} EUR | "
+                f"inverted={result.is_inverted}"
+            ),
             fontsize=14,
         )
 
@@ -159,7 +163,8 @@ class HoughTuningBrowser:
         fname = self._filenames[self._idx]
 
         self._fig.suptitle(
-            f"[{self._idx + 1}/{len(self._originals)}] {fname} | pred={res.coin_count} | inv={res.is_inverted} | "
+            f"[{self._idx + 1}/{len(self._originals)}] {fname} | pred={res.coin_count} | labeled={res.labeled_coin_count} "
+            f"| value={res.estimated_value_eur:.2f} EUR | inv={res.is_inverted} | "
             f"dp={dp:.1f} minDist={md} p1={p1} p2={p2} minR={mn} maxR={mx} | "
             f"(a/d nav, q/esc quit)",
             fontsize=12,
