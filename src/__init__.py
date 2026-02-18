@@ -1,20 +1,22 @@
 from .config import DetectionConfig, RuntimeConfig
-from .dataset import DATA_ROWS
-from .io_utils import get_image_path
+from .dataset import DatasetRepository
+from .io_utils import ImagePathResolver
 from .models import PipelineResult, PipelineStep
 from .processor import CoinProcessor
-from .runner import run
-from .visualization import browse_and_tune, save_pipeline_steps
+from .runner import AppRunner, PipelineApp, RunStats
+from .visualization import HoughTuningBrowser, PipelineVisualizer
 
 __all__ = [
     "DetectionConfig",
     "RuntimeConfig",
-    "DATA_ROWS",
-    "get_image_path",
+    "DatasetRepository",
+    "ImagePathResolver",
     "PipelineResult",
     "PipelineStep",
     "CoinProcessor",
-    "run",
-    "browse_and_tune",
-    "save_pipeline_steps",
+    "RunStats",
+    "PipelineApp",
+    "AppRunner",
+    "PipelineVisualizer",
+    "HoughTuningBrowser",
 ]

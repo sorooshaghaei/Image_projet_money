@@ -1,5 +1,5 @@
-from src.runner import main
+from src.runner import AppRunner
 
 
 if __name__ == "__main__":
-    main()
+    AppRunner().main()

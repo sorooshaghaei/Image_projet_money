@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Tuple
 
 
@@ -19,7 +20,24 @@ class DetectionConfig:
 
 @dataclass(frozen=True)
 class RuntimeConfig:
-    IMAGE_DIRECTORY: str = "/Users/sigmoid/Desktop/Coding/GitHub/S2/Image_projet_money/data/images"
+    IMAGE_DIRECTORY: str = field(default_factory=lambda: _find_image_directory())
     BROWSE_TUNE: bool = True
     SAVE_STEPS: bool = False
     OUT_DIR: str = "./pipeline_viz"
+
+
+def _find_image_directory() -> str:
+    current = Path(__file__).resolve()
+    project_name = "image_projet_money"
+
+    for parent in current.parents:
+        data_images = parent / "data" / "images"
+        if parent.name.lower() == project_name and data_images.exists():
+            return str(data_images)
+
+    for parent in current.parents:
+        data_images = parent / "data" / "images"
+        if data_images.exists():
+            return str(data_images)
+
+    return str((current.parent / ".." / "data" / "images").resolve())

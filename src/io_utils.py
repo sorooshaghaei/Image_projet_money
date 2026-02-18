@@ -1,20 +1,24 @@
-import os
+from pathlib import Path
 from typing import Optional
 
 
-def get_image_path(base_dir: str, filename: str, group: str) -> Optional[str]:
-    path_grouped = os.path.join(base_dir, group, filename)
-    if os.path.exists(path_grouped):
-        return path_grouped
+class ImagePathResolver:
+    def __init__(self, base_dir: str):
+        self._base_dir = Path(base_dir)
 
-    if group.startswith("grp"):
-        alt_group = group.replace("grp", "gp")
-        path_alt = os.path.join(base_dir, alt_group, filename)
-        if os.path.exists(path_alt):
-            return path_alt
+    def resolve(self, filename: str, group: str) -> Optional[str]:
+        path_grouped = self._base_dir / group / filename
+        if path_grouped.exists():
+            return str(path_grouped)
 
-    path_flat = os.path.join(base_dir, filename)
-    if os.path.exists(path_flat):
-        return path_flat
+        if group.startswith("grp"):
+            alt_group = group.replace("grp", "gp")
+            path_alt = self._base_dir / alt_group / filename
+            if path_alt.exists():
+                return str(path_alt)
 
-    return None
+        path_flat = self._base_dir / filename
+        if path_flat.exists():
+            return str(path_flat)
+
+        return None
