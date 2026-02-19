@@ -83,29 +83,31 @@ class RunStats:
 
         general_accuracy = (detection_recall + value_accuracy) / 2.0 if self.processed_value > 0 else detection_recall
 
-        print("=" * 120)
-        print(f"Total Images:     {self.processed}")
-        print("[Detection]")
-        print(f"Count Accuracy:   {count_accuracy:.2f}% (exact match)")
+        print("\n" + "=" * 90)
+        print("Summary")
+        print("-" * 90)
+        print(f"Images:           {self.processed}")
+        print(f"Count Accuracy:   {count_accuracy:.2f}%")
+        print(f"Count MAE:        {count_mae:.2f} coins/image")
         print(f"Recall:           {detection_recall:.2f}%")
         print(f"Precision:        {detection_precision:.2f}%")
         print(f"F1 Score:         {detection_f1:.2f}%")
-        print(f"Count MAE:        {count_mae:.2f} coins/image")
-        print("[Classification]")
         print(f"Labeled Coverage: {label_coverage:.2f}%")
         if self.processed_value > 0:
             print(f"Value Samples:    {self.processed_value}")
             print(f"Value MAE:        {value_mae:.3f} EUR/image")
             print(f"Value Rel Error:  {value_rel_error_pct:.2f}%")
-            print(f"Value Accuracy:   {value_accuracy:.2f}% (from relative error)")
+            print(f"Value Accuracy:   {value_accuracy:.2f}%")
         else:
-            print("Value Accuracy:   N/A (no ground truth values)")
+            print("Value Accuracy:   N/A")
         print(f"General Accuracy: {general_accuracy:.2f}%")
-        print("=" * 120)
+        print("=" * 90)
 
 
 class PipelineApp:
     """Coordinates dataset loading, processing, reporting, and optional UI browsing."""
+
+    _TABLE_RULE = "-" * 108
 
     def __init__(self, runtime: RuntimeConfig):
         self._runtime = runtime
@@ -125,7 +127,7 @@ class PipelineApp:
 
         self._print_header()
 
-        for _, row in df.iterrows():
+        for idx, (_, row) in enumerate(df.iterrows(), start=1):
             filename = row["image"]
             true_count = int(row["pieces"])
             true_value = row["value_eur"]
@@ -161,55 +163,42 @@ class PipelineApp:
                 true_value=true_value_num,
             )
 
-            status = "PERFECT" if diff == 0 else "ERROR"
-            true_value_text = f"{float(true_value):.2f}" if pd.notna(true_value) else "N/A"
-            value_diff_text = f"{value_diff:+.2f}" if value_diff is not None else "N/A"
+            status = "OK" if diff == 0 else "ERR"
+            true_value_text = f"{float(true_value):.2f}" if pd.notna(true_value) else "-"
+            value_diff_text = f"{value_diff:+.2f}" if value_diff is not None else "-"
+            file_col = self._truncate_filename(filename, width=28)
             print(
-                f"{filename:<25} | {group:<5} | {pred:<6} | {true_count:<6} | {diff:<6} | "
-                f"{result.labeled_coin_count:<7} | {pred_value:<8.2f} | {true_value_text:<8} | {value_diff_text:<8} | "
-                f"{status:<10}"
+                f"{idx:>3}  {file_col:<28} {group:<4} "
+                f"{pred:>4} {true_count:>4} {diff:>+4} {result.labeled_coin_count:>4} "
+                f"{pred_value:>7.2f} {true_value_text:>7} {value_diff_text:>7} {status:<3}"
             )
 
-            if result.coin_labels:
+            if result.coin_labels and (diff != 0 or result.labeled_coin_count < result.coin_count):
                 label_hist = self._format_label_hist(result.coin_labels, expected_count=result.coin_count)
                 print(f"  labels: {label_hist}")
-            if result.coin_tags and result.coin_radii:
-                self._print_coin_properties(
-                    coin_tags=result.coin_tags,
-                    coin_radii=result.coin_radii,
-                    color_labels=result.coin_color_labels,
-                    candidate_denoms=result.coin_candidate_denoms,
-                    labels=result.coin_labels,
-                    fit_errors=result.ratio_fit_errors,
-                )
-            if result.radius_ratio_matrix:
-                self._print_ratio_matrix(
-                    result.radius_ratio_matrix,
-                    result.coin_tags,
-                    result.coin_labels,
-                    result.ratio_fit_errors,
-                )
 
             results_all.append(result)
 
             if self._runtime.SAVE_STEPS:
-                saved = self._visualizer.save_pipeline_steps(result, self._runtime.OUT_DIR, cols=4)
+                saved = self._visualizer.save_pipeline_steps(result, self._runtime.OUT_DIR)
                 if saved:
                     print(f"[SAVED] {saved}")
 
         stats.print_summary()
 
         if self._runtime.BROWSE_TUNE:
-            HoughTuningBrowser(self._processor, results_all, cols=4).show()
+            HoughTuningBrowser(self._processor, results_all).show()
 
     def _print_header(self):
         """Prints the table header used by per-image result lines."""
-        print("\n" + "=" * 120)
-        print(
-            f"{'FILENAME':<25} | {'GRP':<5} | {'PRED':<6} | {'TRUE':<6} | {'DIFF':<6} | "
-            f"{'LABELED':<7} | {'PRED_EUR':<8} | {'TRUE_EUR':<8} | {'VDIFF':<8} | {'STATUS':<10}"
-        )
-        print("=" * 120)
+        print("\n" + self._TABLE_RULE)
+        print(f"{'#':>3}  {'FILE':<28} {'GRP':<4} {'PRED':>4} {'TRUE':>4} {'DIFF':>4} {'LAB':>4} {'P_EUR':>7} {'T_EUR':>7} {'D_EUR':>7} {'ST':<3}")
+        print(self._TABLE_RULE)
+
+    def _truncate_filename(self, filename: str, width: int = 28) -> str:
+        if len(filename) <= width:
+            return filename
+        return f"...{filename[-(width - 3):]}"
 
     def _format_label_hist(self, labels, expected_count: Optional[int] = None):
         """Convert per-coin labels into a compact denomination histogram string."""
@@ -230,57 +219,6 @@ class PipelineApp:
         if unknown_count > 0:
             parts.append(f"unknown x{unknown_count}")
         return ", ".join(parts)
-
-    def _print_ratio_matrix(
-        self,
-        ratio_matrix: List[List[float]],
-        coin_tags: List[str],
-        labels: List[Optional[int]],
-        fit_errors: List[Optional[float]],
-    ):
-        """Pretty-print the inter-coin radius ratio matrix for debugging scale fitting."""
-        n = len(ratio_matrix)
-        header_tags = [coin_tags[j] if j < len(coin_tags) else f"C{j+1}" for j in range(n)]
-        header = "      " + " ".join([f"{tag:>6}" for tag in header_tags])
-        print("  radius_ratio_matrix (r_i / r_j):")
-        print("   " + header)
-        for i in range(n):
-            row_txt = " ".join([f"{v:>6.3f}" for v in ratio_matrix[i]])
-            label_txt = f"{labels[i]}c" if i < len(labels) and labels[i] is not None else "?"
-            err = fit_errors[i] if i < len(fit_errors) else None
-            err_txt = f"{err:.3f}" if err is not None else "N/A"
-            row_tag = coin_tags[i] if i < len(coin_tags) else f"C{i+1}"
-            print(f"   {row_tag:>4} {row_txt} | guess={label_txt:<4} ratio_err={err_txt}")
-
-    def _print_coin_properties(
-        self,
-        coin_tags: List[str],
-        coin_radii: List[float],
-        color_labels: List[str],
-        candidate_denoms: List[List[int]],
-        labels: List[Optional[int]],
-        fit_errors: List[Optional[float]],
-    ):
-        """Print per-coin attributes used by color + geometric classification."""
-        if not coin_radii:
-            return
-        r_ref = float(sorted(coin_radii)[len(coin_radii) // 2])
-        if r_ref <= 1e-6:
-            r_ref = 1.0
-
-        print("  coin_properties:")
-        for i, (tag, radius) in enumerate(zip(coin_tags, coin_radii)):
-            norm = radius / r_ref
-            color_lbl = color_labels[i] if i < len(color_labels) else "unknown"
-            candidates = candidate_denoms[i] if i < len(candidate_denoms) else []
-            cand_txt = ",".join([f"{d}c" for d in candidates]) if candidates else "-"
-            guess = f"{labels[i]}c" if i < len(labels) and labels[i] is not None else "?"
-            err = fit_errors[i] if i < len(fit_errors) else None
-            err_txt = f"{err:.3f}" if err is not None else "N/A"
-            print(
-                f"   {tag}: radius={radius:.2f}px norm={norm:.3f} color={color_lbl} "
-                f"cands=[{cand_txt}] guess={guess} ratio_err={err_txt}"
-            )
 
 
 class AppRunner:

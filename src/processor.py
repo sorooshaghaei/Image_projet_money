@@ -220,15 +220,22 @@ class CoinProcessor:
         ]
 
         radius_ratio_matrix = self._build_radius_ratio_matrix(coin_radii)
-        coin_labels, ratio_fit_errors, _ = self.classify_coin_values_by_scale_mm(
+        raw_labels, ratio_fit_errors, _ = self.classify_coin_values_by_scale_mm(
             radii_px=coin_radii,
             candidate_denoms_per_coin=coin_candidate_denoms,
         )
-        estimated_value_eur = float(sum(int(label) for label in coin_labels)) / 100.0
-        labeled_count = len(coin_labels)
+        coin_labels: List[Optional[int]] = []
+        for label, err in zip(raw_labels, ratio_fit_errors):
+            if err is None or float(err) > float(self._cfg.MAX_LABEL_REL_ERROR):
+                coin_labels.append(None)
+            else:
+                coin_labels.append(int(label))
+
+        estimated_value_eur = float(sum(int(label) for label in coin_labels if label is not None)) / 100.0
+        labeled_count = sum(1 for label in coin_labels if label is not None)
 
         return _ClassificationResult(
-            coin_labels=[int(label) for label in coin_labels],
+            coin_labels=coin_labels,
             coin_color_labels=coin_color_labels,
             coin_candidate_denoms=coin_candidate_denoms,
             radius_ratio_matrix=radius_ratio_matrix,
@@ -256,24 +263,54 @@ class CoinProcessor:
         coin_tags: Sequence[str],
         coin_labels: Sequence[Optional[int]],
     ) -> None:
+        h_img, w_img = display_img.shape[:2]
         for idx, (x, y, r) in enumerate(circles):
             x_i, y_i, r_i = int(x), int(y), int(r)
-            cv2.circle(display_img, (x_i, y_i), r_i, (0, 255, 0), 3)
-            cv2.circle(display_img, (x_i, y_i), 2, (0, 0, 255), 3)
+            cv2.circle(display_img, (x_i, y_i), r_i, (0, 0, 0), 5)
+            cv2.circle(display_img, (x_i, y_i), r_i, (0, 255, 0), 2)
+            cv2.circle(display_img, (x_i, y_i), 3, (255, 255, 255), -1)
+            cv2.circle(display_img, (x_i, y_i), 2, (0, 0, 255), -1)
             cv2.circle(mask, (x_i, y_i), r_i, 255, -1)
 
             tag = coin_tags[idx]
             label = coin_labels[idx] if idx < len(coin_labels) else None
             draw_text = f"{tag}" if label is None else f"{tag}:{label}c"
 
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = max(0.55, min(0.9, r_i / 45.0))
+            thickness = max(1, int(round(font_scale * 2.0)))
+            (text_w, text_h), baseline = cv2.getTextSize(draw_text, font, font_scale, thickness)
+
+            text_x = x_i - (text_w // 2)
+            text_y = y_i - r_i - 8
+            if text_y - text_h - baseline < 2:
+                text_y = y_i + r_i + text_h + 8
+
+            text_x = int(np.clip(text_x, 2, max(2, w_img - text_w - 2)))
+            text_y = int(np.clip(text_y, text_h + baseline + 2, h_img - 2))
+
+            pad = 3
+            top_left = (max(0, text_x - pad), max(0, text_y - text_h - baseline - pad))
+            bottom_right = (min(w_img - 1, text_x + text_w + pad), min(h_img - 1, text_y + pad))
+            cv2.rectangle(display_img, top_left, bottom_right, (0, 0, 0), -1)
             cv2.putText(
                 display_img,
                 draw_text,
-                (x_i - max(10, r_i // 2), y_i),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 0, 0),
-                2,
+                (text_x, text_y),
+                font,
+                font_scale,
+                (0, 0, 0),
+                thickness + 2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                display_img,
+                draw_text,
+                (text_x, text_y),
+                font,
+                font_scale,
+                (255, 255, 255),
+                thickness,
                 cv2.LINE_AA,
             )
 

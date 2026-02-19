@@ -32,6 +32,8 @@ class DetectionConfig:
     CIRCLE_MIN_CONTRAST: float = 0.055
     CIRCLE_MIN_SUPPORT_SCORE: float = 0.34
     LOOSE_MIN_SUPPORT_SCORE: float = 0.62
+    # Maximum relative diameter-fit error allowed to keep a denomination label.
+    MAX_LABEL_REL_ERROR: float = 0.12
 
     VALID_EXTENSIONS: Tuple[str, ...] = (".jpg", ".jpeg", ".png", ".webp")
 

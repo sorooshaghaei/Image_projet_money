@@ -74,6 +74,7 @@ For this project, annotations are managed directly in:
 Notebooks in `report/` are presentation-ready:
 - `project_methods_logic.ipynb`: final architecture and method logic
 - `progress_hough_hsv_report.ipynb`: progression from early attempts to final pipeline
+- `dataset_scan_opencv_methods_report.md`: full image scan + OpenCV method tradeoffs + Q&A on accuracy limits/improvements
 
 ## Notes
 - Heavy image datasets are intentionally not committed.

@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.backend_bases import MouseButton
 from matplotlib.widgets import Button, Slider
 
 from .models import PipelineResult
@@ -15,15 +16,15 @@ from .processor import CoinProcessor
 class PipelineVisualizer:
     """Saves static montage images of pipeline stages for one processed input."""
 
-    def save_pipeline_steps(self, result: PipelineResult, out_dir: str, cols: int = 4) -> Optional[str]:
+    def save_pipeline_steps(self, result: PipelineResult, out_dir: str) -> Optional[str]:
         """Render and persist a grid of debug steps for offline inspection."""
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         steps = result.steps
-        n = len(steps)
-        if n == 0:
+        if not steps:
             return None
 
-        rows = ceil(n / cols)
+        cols = 4
+        rows = ceil(len(steps) / cols)
         fig, axes = plt.subplots(rows, cols, figsize=(4.5 * cols, 4.0 * rows))
         fig.suptitle(
             (
@@ -34,24 +35,17 @@ class PipelineVisualizer:
             fontsize=14,
         )
 
-        axes_matrix = self._normalize_axes_shape(axes, rows, cols)
-
-        for i, step in enumerate(steps):
-            r, c = divmod(i, cols)
-            ax = axes_matrix[r, c]
-            img = step.image
-
-            if step.cmap == "rgb":
-                ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            else:
-                ax.imshow(img, cmap="gray")
-
-            ax.set_title(step.name, fontsize=11)
+        axes_matrix = np.array(axes, dtype=object).reshape(rows, cols)
+        for idx, ax in enumerate(axes_matrix.flat):
             ax.axis("off")
-
-        for j in range(n, rows * cols):
-            r, c = divmod(j, cols)
-            axes_matrix[r, c].axis("off")
+            if idx >= len(steps):
+                continue
+            step = steps[idx]
+            if step.cmap == "rgb":
+                ax.imshow(cv2.cvtColor(step.image, cv2.COLOR_BGR2RGB))
+            else:
+                ax.imshow(step.image, cmap="gray")
+            ax.set_title(step.name, fontsize=11)
 
         plt.tight_layout()
         out_path = Path(out_dir) / f"{Path(result.source_filename).stem}_pipeline.png"
@@ -59,60 +53,53 @@ class PipelineVisualizer:
         plt.close(fig)
         return str(out_path)
 
-    def _normalize_axes_shape(self, axes, rows: int, cols: int) -> np.ndarray:
-        """Normalize matplotlib axis return type to a 2D matrix for uniform indexing."""
-        if rows == 1 and cols == 1:
-            return np.array([[axes]])
-        if rows == 1:
-            return np.array([axes])
-        if cols == 1:
-            return np.array([[ax] for ax in axes])
-        return axes
-
 
 class HoughTuningBrowser:
     """Interactive UI for tuning Hough parameters and inspecting pipeline behavior."""
 
-    def __init__(self, processor: CoinProcessor, results: List[PipelineResult], cols: int = 4):
+    _GRID_COLS = 3
+    _GRID_ROWS = 2
+    _SLIDER_FACE = "#e8edf5"
+    _PARAM_SPECS = (
+        ("dp", "dp", (0.06, 0.27, 0.40, 0.03), 0.5, 3.0, "HOUGH_DP", 0.1, float),
+        ("minDist", "minDist", (0.06, 0.23, 0.40, 0.03), 1, 300, "HOUGH_MIN_DIST", 1, int),
+        ("param1", "param1", (0.06, 0.19, 0.40, 0.03), 1, 300, "HOUGH_PARAM1", 1, int),
+        ("param2", "param2", (0.06, 0.15, 0.40, 0.03), 1, 300, "HOUGH_PARAM2", 1, int),
+        ("minR", "minR", (0.54, 0.27, 0.40, 0.03), 0, 300, "HOUGH_MIN_RADIUS", 1, int),
+        ("maxR", "maxR", (0.54, 0.23, 0.40, 0.03), 1, 500, "HOUGH_MAX_RADIUS", 1, int),
+    )
+    _NAV_KEYS = {"d": 1, "right": 1, "a": -1, "left": -1}
+
+    def __init__(self, processor: CoinProcessor, results: List[PipelineResult]):
         self._processor = processor
         self._results = results
-        self._cols = cols
+        self._cfg = processor._cfg
 
         self._idx = 0
         self._locked = False
-        self._pending = {"timer": None}
+        self._fast_mode = False
         self._suppress_updates = False
+        self._syncing_index_slider = False
 
         self._originals: List[np.ndarray] = [r.steps[0].image.copy() for r in results]
         self._filenames: List[str] = [r.source_filename for r in results]
 
-        self._cfg = processor._cfg
-
-        self._rows = ceil(5 / cols)
         self._fig = None
         self._axes = None
-
-        self._s_dp = None
-        self._s_minDist = None
-        self._s_p1 = None
-        self._s_p2 = None
-        self._s_minR = None
-        self._s_maxR = None
-        self._s_image = None
-        self._btn_lock = None
-        self._btn_prev = None
-        self._btn_next = None
-        self._btn_fast = None
         self._status_text = None
-        self._syncing_index_slider = False
+        self._sliders: Dict[str, Slider] = {}
+        self._image_slider: Optional[Slider] = None
+        self._buttons: Dict[str, Button] = {}
+
         self._axis_to_index: Dict[object, int] = {}
-        self._zoom_state: Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]] = {}
+        # Per-panel zoom box as normalized coordinates (x0, x1, y0, y1) in [0, 1].
+        self._zoom_state: Dict[int, Tuple[float, float, float, float]] = {}
 
         self._cache: Dict[Tuple[int, int, float, int, int, int, int, int], PipelineResult] = {}
         self._cache_limit = 256
         self._debounce_ms = 80
+        self._pending_timer = None
         self._last_compute_ms = 0.0
-        self._fast_mode = False
 
     def show(self):
         """Open the interactive tuning window."""
@@ -126,77 +113,32 @@ class HoughTuningBrowser:
         plt.show()
 
     def _setup_figure(self):
-        """Build UI layout: preview panels, sliders, and control buttons."""
-        fig_w = min(14.0, max(10.5, 3.4 * self._cols))
-        fig_h = min(8.6, max(6.8, 2.35 * self._rows + 2.8))
+        fig_w = min(15.0, max(12.0, 4.2 * self._GRID_COLS))
+        fig_h = min(9.2, max(7.4, 2.55 * self._GRID_ROWS + 2.9))
         self._fig = plt.figure(figsize=(fig_w, fig_h))
         self._fig.set_facecolor("#f3f4f6")
+
         gs = self._fig.add_gridspec(
-            self._rows,
-            self._cols,
-            top=0.86,
-            bottom=0.32,
+            self._GRID_ROWS,
+            self._GRID_COLS,
+            top=0.89,
+            bottom=0.33,
             left=0.03,
             right=0.99,
-            wspace=0.05,
-            hspace=0.15,
+            wspace=0.03,
+            hspace=0.12,
         )
 
-        self._axes = np.empty((self._rows, self._cols), dtype=object)
-        for r in range(self._rows):
-            for c in range(self._cols):
-                self._axes[r, c] = self._fig.add_subplot(gs[r, c])
-                self._axes[r, c].set_facecolor("#ffffff")
-                self._axis_to_index[self._axes[r, c]] = r * self._cols + c
+        self._axes = np.empty((self._GRID_ROWS, self._GRID_COLS), dtype=object)
+        for idx in range(self._GRID_ROWS * self._GRID_COLS):
+            r, c = divmod(idx, self._GRID_COLS)
+            ax = self._fig.add_subplot(gs[r, c])
+            ax.set_facecolor("#ffffff")
+            self._axes[r, c] = ax
+            self._axis_to_index[ax] = idx
 
-        ax_dp = self._fig.add_axes([0.06, 0.27, 0.40, 0.03], facecolor="#e8edf5")
-        ax_minDist = self._fig.add_axes([0.06, 0.23, 0.40, 0.03], facecolor="#e8edf5")
-        ax_p1 = self._fig.add_axes([0.06, 0.19, 0.40, 0.03], facecolor="#e8edf5")
-        ax_p2 = self._fig.add_axes([0.06, 0.15, 0.40, 0.03], facecolor="#e8edf5")
-        ax_minR = self._fig.add_axes([0.54, 0.27, 0.40, 0.03], facecolor="#e8edf5")
-        ax_maxR = self._fig.add_axes([0.54, 0.23, 0.40, 0.03], facecolor="#e8edf5")
-
-        self._s_dp = Slider(ax_dp, "dp", 0.5, 3.0, valinit=float(self._cfg.HOUGH_DP), valstep=0.1)
-        self._s_minDist = Slider(ax_minDist, "minDist", 1, 300, valinit=int(self._cfg.HOUGH_MIN_DIST), valstep=1)
-        self._s_p1 = Slider(ax_p1, "param1", 1, 300, valinit=int(self._cfg.HOUGH_PARAM1), valstep=1)
-        self._s_p2 = Slider(ax_p2, "param2", 1, 300, valinit=int(self._cfg.HOUGH_PARAM2), valstep=1)
-        self._s_minR = Slider(ax_minR, "minR", 0, 300, valinit=int(self._cfg.HOUGH_MIN_RADIUS), valstep=1)
-        self._s_maxR = Slider(ax_maxR, "maxR", 1, 500, valinit=int(self._cfg.HOUGH_MAX_RADIUS), valstep=1)
-        for slider in (self._s_dp, self._s_minDist, self._s_p1, self._s_p2, self._s_minR, self._s_maxR):
-            self._style_slider(slider)
-
-        if len(self._originals) > 1:
-            ax_image = self._fig.add_axes([0.54, 0.19, 0.40, 0.03], facecolor="#e8edf5")
-            self._s_image = Slider(
-                ax_image,
-                "image",
-                1,
-                len(self._originals),
-                valinit=1,
-                valstep=1,
-            )
-            self._style_slider(self._s_image)
-
-        ax_prev = self._fig.add_axes([0.06, 0.08, 0.12, 0.055], facecolor="#e8edf5")
-        ax_next = self._fig.add_axes([0.19, 0.08, 0.12, 0.055], facecolor="#e8edf5")
-        ax_reset = self._fig.add_axes([0.54, 0.08, 0.12, 0.055], facecolor="#e8edf5")
-        ax_lock = self._fig.add_axes([0.68, 0.08, 0.12, 0.055], facecolor="#e8edf5")
-        ax_fast = self._fig.add_axes([0.82, 0.08, 0.12, 0.055], facecolor="#e8edf5")
-
-        self._btn_prev = Button(ax_prev, "Prev")
-        self._btn_next = Button(ax_next, "Next")
-        btn_reset = Button(ax_reset, "Reset")
-        self._btn_lock = Button(ax_lock, "Lock: OFF")
-        self._btn_fast = Button(ax_fast, "Fast: OFF")
-        for btn in (self._btn_prev, self._btn_next, btn_reset, self._btn_lock, self._btn_fast):
-            btn.label.set_fontsize(10)
-
-        self._btn_prev.on_clicked(self._on_prev)
-        self._btn_next.on_clicked(self._on_next)
-        btn_reset.on_clicked(self._on_reset)
-        self._btn_lock.on_clicked(self._on_lock)
-        self._btn_fast.on_clicked(self._on_fast_mode)
-
+        self._build_sliders()
+        self._build_buttons()
         self._status_text = self._fig.text(
             0.06,
             0.02,
@@ -208,56 +150,97 @@ class HoughTuningBrowser:
         )
         self._try_fit_to_screen()
 
+    def _build_sliders(self):
+        for key, label, rect, valmin, valmax, cfg_attr, valstep, caster in self._PARAM_SPECS:
+            init = caster(getattr(self._cfg, cfg_attr))
+            self._sliders[key] = self._create_slider(
+                label=label,
+                rect=rect,
+                valmin=valmin,
+                valmax=valmax,
+                valinit=init,
+                valstep=valstep,
+            )
+
+        if len(self._originals) > 1:
+            self._image_slider = self._create_slider(
+                label="image",
+                rect=(0.54, 0.19, 0.40, 0.03),
+                valmin=1,
+                valmax=len(self._originals),
+                valinit=1,
+                valstep=1,
+            )
+
+    def _build_buttons(self):
+        button_specs = (
+            ("prev", "Prev", (0.06, 0.08, 0.12, 0.055), lambda _e: self._shift_image(-1)),
+            ("next", "Next", (0.19, 0.08, 0.12, 0.055), lambda _e: self._shift_image(1)),
+            ("reset", "Reset", (0.54, 0.08, 0.12, 0.055), self._on_reset),
+            ("lock", "Lock: OFF", (0.68, 0.08, 0.12, 0.055), lambda _e: self._toggle("lock")),
+            ("fast", "Fast: OFF", (0.82, 0.08, 0.12, 0.055), lambda _e: self._toggle("fast")),
+        )
+        for key, label, rect, callback in button_specs:
+            ax = self._fig.add_axes(rect, facecolor=self._SLIDER_FACE)
+            btn = Button(ax, label)
+            btn.label.set_fontsize(10)
+            btn.on_clicked(callback)
+            self._buttons[key] = btn
+
+    def _create_slider(self, label: str, rect, valmin: float, valmax: float, valinit: float, valstep: float) -> Slider:
+        ax = self._fig.add_axes(rect, facecolor=self._SLIDER_FACE)
+        slider = Slider(ax, label, valmin, valmax, valinit=valinit, valstep=valstep)
+        self._style_slider(slider)
+        return slider
+
     def _bind_events(self):
-        """Bind keyboard/mouse/slider events to update callbacks."""
         self._fig.canvas.mpl_connect("key_press_event", self._on_key)
         self._fig.canvas.mpl_connect("scroll_event", self._on_scroll_zoom)
         self._fig.canvas.mpl_connect("button_press_event", self._on_click)
 
-        self._s_dp.on_changed(self._schedule_update)
-        self._s_minDist.on_changed(self._schedule_update)
-        self._s_p1.on_changed(self._schedule_update)
-        self._s_p2.on_changed(self._schedule_update)
-        self._s_minR.on_changed(self._schedule_update)
-        self._s_maxR.on_changed(self._schedule_update)
-        if self._s_image is not None:
-            self._s_image.on_changed(self._on_image_slider)
+        for key in ("dp", "minDist", "param1", "param2", "minR", "maxR"):
+            self._sliders[key].on_changed(self._schedule_update)
+        if self._image_slider is not None:
+            self._image_slider.on_changed(self._on_image_slider)
+
+    def _params(self) -> Dict[str, float]:
+        sliders = self._sliders
+        return {
+            "dp": float(sliders["dp"].val),
+            "minDist": int(sliders["minDist"].val),
+            "param1": int(sliders["param1"].val),
+            "param2": int(sliders["param2"].val),
+            "minRadius": int(sliders["minR"].val),
+            "maxRadius": int(sliders["maxR"].val),
+        }
 
     def _render(self, res: PipelineResult):
-        """Redraw all panels using the current image and current parameter set."""
-        dp = self._s_dp.val
-        md = int(self._s_minDist.val)
-        p1 = int(self._s_p1.val)
-        p2 = int(self._s_p2.val)
-        mn = int(self._s_minR.val)
-        mx = int(self._s_maxR.val)
+        p = self._params()
         fname = self._filenames[self._idx]
 
         self._fig.suptitle(
             f"[{self._idx + 1}/{len(self._originals)}] {fname} | pred={res.coin_count} | labeled={res.labeled_coin_count} "
             f"| value={res.estimated_value_eur:.2f} EUR | inv={res.is_inverted} | "
-            f"dp={dp:.1f} minDist={md} p1={p1} p2={p2} minR={mn} maxR={mx} | "
+            f"dp={p['dp']:.1f} minDist={p['minDist']} p1={p['param1']} p2={p['param2']} "
+            f"minR={p['minRadius']} maxR={p['maxRadius']} | "
             f"mode={'fast' if self._fast_mode else 'full'} | t={self._last_compute_ms:.0f}ms | "
             f"(a/d or arrows nav, f fast, l lock, r reset, q/esc quit)",
             fontsize=12,
         )
 
-        for j in range(self._rows * self._cols):
-            rr, cc = divmod(j, self._cols)
-            ax = self._axes[rr, cc]
+        for idx, ax in enumerate(self._axes.flat):
             ax.clear()
             ax.axis("off")
-
-            if j >= len(res.steps):
+            if idx >= len(res.steps):
                 continue
 
-            step = res.steps[j]
+            step = res.steps[idx]
             if step.cmap == "rgb":
                 ax.imshow(cv2.cvtColor(step.image, cv2.COLOR_BGR2RGB))
             else:
                 ax.imshow(step.image, cmap="gray")
             ax.set_title(step.name, fontsize=11, color="#111827")
-            self._apply_zoom_state(ax=ax, axis_index=j, image=step.image)
+            self._apply_zoom_state(ax=ax, axis_index=idx, image=step.image)
 
         if self._status_text is not None:
             self._status_text.set_text(
@@ -270,145 +253,104 @@ class HoughTuningBrowser:
                     f"Zoom: mouse wheel | reset zoom: right click"
                 )
             )
+
         self._fig.canvas.draw_idle()
 
-    def _clamp_slider_pair(self):
-        """Ensure radius slider bounds stay valid (maxR must stay > minR)."""
-        mn = int(self._s_minR.val)
-        mx = int(self._s_maxR.val)
-        if mx <= mn:
-            self._suppress_updates = True
-            self._s_maxR.set_val(mn + 1)
-            self._suppress_updates = False
-
-    def _current_params_key(self) -> Tuple[int, int, float, int, int, int, int, int]:
-        """Cache key for avoiding redundant recomputation."""
-        return (
-            self._idx,
-            1 if self._fast_mode else 0,
-            round(float(self._s_dp.val), 1),
-            int(self._s_minDist.val),
-            int(self._s_p1.val),
-            int(self._s_p2.val),
-            int(self._s_minR.val),
-            int(self._s_maxR.val),
-        )
-
-    def _sync_image_slider(self):
-        """Keep image slider and current index synchronized."""
-        if self._s_image is None:
-            return
-        self._syncing_index_slider = True
-        self._s_image.set_val(self._idx + 1)
-        self._syncing_index_slider = False
-
     def _compute_live(self):
-        """Run live detection/classification for current controls and cache result."""
-        self._clamp_slider_pair()
+        params = self._params()
+        if params["maxRadius"] <= params["minRadius"]:
+            self._suppress_updates = True
+            self._sliders["maxR"].set_val(params["minRadius"] + 1)
+            self._suppress_updates = False
+            params = self._params()
 
+        key = (
+            self._idx,
+            int(self._fast_mode),
+            round(params["dp"], 1),
+            params["minDist"],
+            params["param1"],
+            params["param2"],
+            params["minRadius"],
+            params["maxRadius"],
+        )
         img = self._originals[self._idx]
         fname = self._filenames[self._idx]
-        key = self._current_params_key()
-
         start = perf_counter()
-        res = self._cache.get(key)
-        if res is None:
-            res = self._processor.detect_with_params(
+        result = self._cache.get(key)
+        if result is None:
+            result = self._processor.detect_with_params(
                 img_bgr_resized=img,
-                dp=float(self._s_dp.val),
-                minDist=int(self._s_minDist.val),
-                param1=int(self._s_p1.val),
-                param2=int(self._s_p2.val),
-                minRadius=int(self._s_minR.val),
-                maxRadius=int(self._s_maxR.val),
                 filename=fname,
                 classify=not self._fast_mode,
+                **params,
             )
-            # Small bounded cache keeps UI responsive when toggling nearby settings.
-            self._cache[key] = res
+            self._cache[key] = result
             if len(self._cache) > self._cache_limit:
                 self._cache.pop(next(iter(self._cache)))
+
         self._last_compute_ms = (perf_counter() - start) * 1000.0
-        self._render(res)
+        self._render(result)
 
     def _schedule_update(self, _=None):
-        """Debounce expensive recomputation while sliders are moving."""
         if self._locked or self._suppress_updates:
             return
 
-        timer = self._pending["timer"]
-        if timer is not None:
+        if self._pending_timer is not None:
             try:
-                timer.stop()
+                self._pending_timer.stop()
             except Exception:
                 pass
 
-        timer = self._fig.canvas.new_timer(interval=self._debounce_ms)
-        timer.add_callback(self._compute_live)
-        self._pending["timer"] = timer
-        timer.start()
+        self._pending_timer = self._fig.canvas.new_timer(interval=self._debounce_ms)
+        self._pending_timer.add_callback(self._compute_live)
+        self._pending_timer.start()
+
+    def _shift_image(self, delta: int):
+        self._idx = (self._idx + delta) % len(self._originals)
+        if self._image_slider is not None:
+            self._syncing_index_slider = True
+            self._image_slider.set_val(self._idx + 1)
+            self._syncing_index_slider = False
+        self._compute_live()
 
     def _on_key(self, event):
-        """Keyboard shortcuts for fast navigation and mode toggles."""
-        if event.key in ("d", "right"):
-            self._idx = (self._idx + 1) % len(self._originals)
-            self._sync_image_slider()
-            self._compute_live()
-        elif event.key in ("a", "left"):
-            self._idx = (self._idx - 1) % len(self._originals)
-            self._sync_image_slider()
-            self._compute_live()
-        elif event.key == "f":
-            self._on_fast_mode(None)
+        if event.key in self._NAV_KEYS:
+            self._shift_image(self._NAV_KEYS[event.key])
+            return
+        if event.key == "f":
+            self._toggle("fast")
         elif event.key == "l":
-            self._on_lock(None)
+            self._toggle("lock")
         elif event.key == "r":
             self._on_reset(None)
         elif event.key in ("q", "escape"):
             plt.close(self._fig)
 
     def _on_reset(self, _event):
-        """Restore default Hough parameters and clear zoom state."""
         self._suppress_updates = True
-        self._s_dp.set_val(float(self._cfg.HOUGH_DP))
-        self._s_minDist.set_val(int(self._cfg.HOUGH_MIN_DIST))
-        self._s_p1.set_val(int(self._cfg.HOUGH_PARAM1))
-        self._s_p2.set_val(int(self._cfg.HOUGH_PARAM2))
-        self._s_minR.set_val(int(self._cfg.HOUGH_MIN_RADIUS))
-        self._s_maxR.set_val(int(self._cfg.HOUGH_MAX_RADIUS))
+        for key, _label, _rect, _vmin, _vmax, cfg_attr, _step, caster in self._PARAM_SPECS:
+            self._sliders[key].set_val(caster(getattr(self._cfg, cfg_attr)))
         self._suppress_updates = False
         self._zoom_state.clear()
         self._compute_live()
 
-    def _on_lock(self, _event):
-        """Freeze/unfreeze auto-updates while user edits controls."""
-        self._locked = not self._locked
-        self._btn_lock.label.set_text("Lock: ON" if self._locked else "Lock: OFF")
-        self._fig.canvas.draw_idle()
-        if not self._locked:
+    def _toggle(self, mode: str):
+        if mode == "lock":
+            self._locked = not self._locked
+            self._buttons["lock"].label.set_text("Lock: ON" if self._locked else "Lock: OFF")
+            self._fig.canvas.draw_idle()
+            if not self._locked:
+                self._compute_live()
+            return
+
+        if mode == "fast":
+            self._fast_mode = not self._fast_mode
+            self._buttons["fast"].label.set_text("Fast: ON" if self._fast_mode else "Fast: OFF")
+            self._fig.canvas.draw_idle()
             self._compute_live()
 
-    def _on_fast_mode(self, _event):
-        """Toggle fast mode (detection only) vs full mode (detection + classification)."""
-        self._fast_mode = not self._fast_mode
-        self._btn_fast.label.set_text("Fast: ON" if self._fast_mode else "Fast: OFF")
-        self._fig.canvas.draw_idle()
-        self._compute_live()
-
-    def _on_prev(self, _event):
-        """Move to previous image in browser."""
-        self._idx = (self._idx - 1) % len(self._originals)
-        self._sync_image_slider()
-        self._compute_live()
-
-    def _on_next(self, _event):
-        """Move to next image in browser."""
-        self._idx = (self._idx + 1) % len(self._originals)
-        self._sync_image_slider()
-        self._compute_live()
-
     def _on_image_slider(self, value):
-        """Jump to the image index selected via slider."""
         if self._syncing_index_slider:
             return
         new_idx = int(round(value)) - 1
@@ -416,21 +358,20 @@ class HoughTuningBrowser:
         self._compute_live()
 
     def _apply_zoom_state(self, ax, axis_index: int, image: np.ndarray):
-        """Reapply persisted zoom box when panels rerender."""
         if axis_index not in self._zoom_state:
             return
-        xlim, ylim = self._zoom_state[axis_index]
         h, w = image.shape[:2]
-        x0 = float(np.clip(min(xlim), 0, max(0, w - 1)))
-        x1 = float(np.clip(max(xlim), 1, max(1, w)))
-        y0 = float(np.clip(min(ylim), 0, max(0, h - 1)))
-        y1 = float(np.clip(max(ylim), 1, max(1, h)))
+        x0n, x1n, y0n, y1n = self._zoom_state[axis_index]
+
+        x0 = float(np.clip(min(x0n, x1n) * w, 0, max(0, w - 1)))
+        x1 = float(np.clip(max(x0n, x1n) * w, 1, max(1, w)))
+        y0 = float(np.clip(min(y0n, y1n) * h, 0, max(0, h - 1)))
+        y1 = float(np.clip(max(y0n, y1n) * h, 1, max(1, h)))
         ax.set_xlim((x0, x1))
         ax.set_ylim((y1, y0))
 
     def _on_scroll_zoom(self, event):
-        """Mouse wheel zoom centered at cursor position."""
-        if event.inaxes is None:
+        if event.inaxes is None or event.xdata is None or event.ydata is None:
             return
         axis_index = self._axis_to_index.get(event.inaxes)
         if axis_index is None:
@@ -438,18 +379,14 @@ class HoughTuningBrowser:
         ax = event.inaxes
         if not ax.images:
             return
-        if event.xdata is None or event.ydata is None:
-            return
-
         img = ax.images[0].get_array()
-        h, w = img.shape[:2]
-        cur_xlim = ax.get_xlim()
-        cur_ylim = ax.get_ylim()
-        cur_xmin, cur_xmax = min(cur_xlim), max(cur_xlim)
-        cur_ymin, cur_ymax = min(cur_ylim), max(cur_ylim)
 
-        zoom_factor = 1.2
-        scale = 1.0 / zoom_factor if event.button == "up" else zoom_factor
+        h, w = img.shape[:2]
+        cur_xmin, cur_xmax = sorted(ax.get_xlim())
+        cur_ymin, cur_ymax = sorted(ax.get_ylim())
+
+        zoom_in = bool(getattr(event, "step", 0) > 0 or event.button == "up")
+        scale = (1.0 / 1.2) if zoom_in else 1.2
         new_w = max(8.0, (cur_xmax - cur_xmin) * scale)
         new_h = max(8.0, (cur_ymax - cur_ymin) * scale)
 
@@ -462,23 +399,25 @@ class HoughTuningBrowser:
 
         ax.set_xlim((x0, x1))
         ax.set_ylim((y1, y0))
-        self._zoom_state[axis_index] = ((x0, x1), (y1, y0))
+        self._zoom_state[axis_index] = (
+            float(np.clip(x0 / max(w, 1), 0.0, 1.0)),
+            float(np.clip(x1 / max(w, 1), 0.0, 1.0)),
+            float(np.clip(y0 / max(h, 1), 0.0, 1.0)),
+            float(np.clip(y1 / max(h, 1), 0.0, 1.0)),
+        )
         self._fig.canvas.draw_idle()
 
     def _on_click(self, event):
-        """Right-click resets zoom on the clicked panel."""
-        if event.inaxes is None:
+        if event.inaxes is None or event.button not in (3, MouseButton.RIGHT):
             return
         axis_index = self._axis_to_index.get(event.inaxes)
         if axis_index is None:
             return
-        if event.button != 3:
-            return
-
         ax = event.inaxes
         if not ax.images:
             return
         img = ax.images[0].get_array()
+
         h, w = img.shape[:2]
         ax.set_xlim((0, w))
         ax.set_ylim((h, 0))
@@ -486,7 +425,6 @@ class HoughTuningBrowser:
         self._fig.canvas.draw_idle()
 
     def _try_fit_to_screen(self):
-        """Shrink figure when needed so controls remain visible on smaller displays."""
         try:
             manager = self._fig.canvas.manager
             if not hasattr(manager, "window"):
@@ -494,6 +432,7 @@ class HoughTuningBrowser:
             window = manager.window
             if not hasattr(window, "winfo_screenwidth"):
                 return
+
             sw = int(window.winfo_screenwidth())
             sh = int(window.winfo_screenheight())
             dpi = float(self._fig.dpi)
@@ -507,7 +446,6 @@ class HoughTuningBrowser:
             return
 
     def _style_slider(self, slider: Slider):
-        """Apply a consistent visual style to sliders."""
         slider.poly.set_facecolor("#2a6fdb")
         if hasattr(slider, "vline"):
             slider.vline.set_color("#1e3a8a")
