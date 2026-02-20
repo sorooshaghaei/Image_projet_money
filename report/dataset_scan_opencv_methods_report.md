@@ -1,6 +1,6 @@
 # Dataset Scan and OpenCV Method Report
 
-Date: 2026-02-19
+Date: 2026-02-20
 
 ## Scope
 - Scanned all files in `data/images`: 106 images.
@@ -9,6 +9,13 @@ Date: 2026-02-19
 
 Scan outputs are saved in:
 - `report/dataset_image_scan.csv`
+
+---
+
+## Branch Status Update (2026-02-20)
+- `src_v2/` and legacy `report/runtime_v2*.txt` logs were removed from branch `soroosh_test`.
+- This branch now keeps the baseline source tree (`src/`) as the active tracked implementation.
+- A dedicated follow-up branch (`second_experiment`) is used for the next `src_v2` hybrid experiment workflow.
 
 ---
 
