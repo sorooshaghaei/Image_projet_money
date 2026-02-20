@@ -60,6 +60,18 @@ python main.py
 - prints count/value metrics,
 - can open the interactive tuning browser (depending on `RuntimeConfig`).
 
+## Run `src_v2` Hybrid Policy (second_experiment branch)
+```bash
+.venv/bin/python main_v2.py --path data/images --short-root data/images --mode auto
+```
+
+This prints a per-image trace in terminal including:
+- background label (`easy/medium/difficult`)
+- selected method (`contours`, `hough`, `watershed`, `hough+watershed`)
+- overlap flag and count summary
+
+Use `--visualize` to open the interactive parameter visualizer.
+
 ## Data and Annotations
 Images are expected in:
 - `data/images/<group>/<image_name>`

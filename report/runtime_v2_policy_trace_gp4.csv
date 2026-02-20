@@ -1,0 +1,11 @@
+source_path,short_path,background_label,selected_method,coin_count,border_cv,edge_density,texture_score,contour_merge_score,hough_overlap_pairs,likely_overlap
+data/images/gp4/1.jpg,gp4/1.jpg,easy,hough+watershed,12,0.066391,0.013427,0.054903,0.000000,21,1
+data/images/gp4/10.jpg,gp4/10.jpg,medium,hough,49,0.119011,0.280379,0.322689,0.000000,100,0
+data/images/gp4/2.jpg,gp4/2.jpg,easy,contours,3,0.079562,0.018096,0.067549,0.000000,22,0
+data/images/gp4/3.jpg,gp4/3.jpg,easy,contours,4,0.086099,0.026096,0.078799,0.000000,25,0
+data/images/gp4/4.jpg,gp4/4.jpg,easy,contours,6,0.095679,0.032748,0.090846,0.000000,72,0
+data/images/gp4/5.jpg,gp4/5.jpg,easy,contours,3,0.063689,0.032489,0.069825,0.000000,34,0
+data/images/gp4/6.jpg,gp4/6.jpg,easy,contours,1,0.051199,0.031813,0.061115,0.000000,74,0
+data/images/gp4/7.jpg,gp4/7.jpg,easy,contours,8,0.094228,0.032626,0.089796,0.000000,28,0
+data/images/gp4/8.jpg,gp4/8.jpg,easy,contours,7,0.082978,0.038702,0.087800,0.000000,132,0
+data/images/gp4/9.jpg,gp4/9.jpg,medium,hough,28,0.121784,0.306777,0.347589,0.076923,62,0

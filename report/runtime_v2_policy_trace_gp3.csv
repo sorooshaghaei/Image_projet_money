@@ -1,0 +1,11 @@
+source_path,short_path,background_label,selected_method,coin_count,border_cv,edge_density,texture_score,contour_merge_score,hough_overlap_pairs,likely_overlap
+data/images/gp3/3_1.jpg,gp3/3_1.jpg,easy,contours,3,0.120029,0.039693,0.112751,0.000000,11,0
+data/images/gp3/3_10.jpg,gp3/3_10.jpg,medium,hough,40,0.114032,0.228630,0.274172,0.000000,25,0
+data/images/gp3/3_2.jpg,gp3/3_2.jpg,easy,contours,5,0.152618,0.087876,0.176094,0.100000,123,0
+data/images/gp3/3_3.jpg,gp3/3_3.jpg,easy,contours,3,0.120029,0.039693,0.112751,0.000000,11,0
+data/images/gp3/3_4.jpg,gp3/3_4.jpg,easy,contours,6,0.115541,0.051378,0.120057,0.111111,17,0
+data/images/gp3/3_5.jpg,gp3/3_5.jpg,medium,hough,67,0.131176,0.175140,0.238512,0.000000,155,0
+data/images/gp3/3_6.jpg,gp3/3_6.jpg,medium,hough,100,0.161843,0.182680,0.265043,0.000000,364,0
+data/images/gp3/3_7.jpg,gp3/3_7.jpg,medium,hough,22,0.325704,0.145023,0.338603,0.071429,24,0
+data/images/gp3/3_8.jpg,gp3/3_8.jpg,medium,hough,67,0.237186,0.159662,0.293875,0.033333,101,0
+data/images/gp3/3_9.jpg,gp3/3_9.jpg,medium,hough,27,0.101185,0.205035,0.245175,0.000000,14,0
