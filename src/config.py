@@ -32,6 +32,12 @@ class DetectionConfig:
     CIRCLE_MIN_CONTRAST: float = 0.055
     CIRCLE_MIN_SUPPORT_SCORE: float = 0.34
     LOOSE_MIN_SUPPORT_SCORE: float = 0.62
+    # Color normalization path used before coin material/denomination priors.
+    COLOR_NORMALIZATION_ENABLED: bool = True
+    COLOR_GRAYWORLD_WHITE_BALANCE: bool = True
+    COLOR_CLAHE_CLIP_LIMIT: float = 2.5
+    COLOR_CLAHE_TILE_GRID: int = 8
+    COLOR_DENOISE_KERNEL_SIZE: int = 5
     # Maximum relative diameter-fit error allowed to keep a denomination label.
     MAX_LABEL_REL_ERROR: float = 0.12
 

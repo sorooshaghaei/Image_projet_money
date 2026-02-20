@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 import cv2
@@ -141,18 +142,50 @@ class PipelineApp:
             filename = row["image"]
             true_count = int(row["pieces"])
             true_value = row["value_eur"]
-            group = row["group"]
+            group_annot = row["group"]
+            true_value_num = float(true_value) if pd.notna(true_value) else None
 
-            image_path = self._path_resolver.resolve(filename, group)
+            image_path = self._path_resolver.resolve(filename, group_annot)
+            true_value_text = f"{true_value_num:.2f}" if true_value_num is not None else "-"
+            file_col = self._truncate_filename(filename, width=28)
             if not image_path:
+                print(
+                    f"{idx:>3}  {file_col:<28} {group_annot:<4} "
+                    f"{'-':>4} {true_count:>4} {'-':>4} {'-':>4} "
+                    f"{'-':>7} {true_value_text:>7} {'-':>7} {'MISS':<3}"
+                )
+                self._print_image_value_trace(
+                    image_name=filename,
+                    expected_folder=group_annot,
+                    src_path=None,
+                    pred_value=None,
+                    real_value=true_value_num,
+                )
                 continue
 
+            resolved_path = Path(image_path)
+            resolved_filename = resolved_path.name
+            resolved_group = resolved_path.parent.name
             img = cv2.imread(image_path)
             if img is None:
                 print(f"[ERR ] Unreadable: {filename}")
+                file_col = self._truncate_filename(resolved_filename, width=28)
+                print(
+                    f"{idx:>3}  {file_col:<28} {resolved_group:<4} "
+                    f"{'-':>4} {true_count:>4} {'-':>4} {'-':>4} "
+                    f"{'-':>7} {true_value_text:>7} {'-':>7} {'IOE':<3}"
+                )
+                self._print_image_value_trace(
+                    image_name=resolved_filename,
+                    expected_folder=group_annot,
+                    src_path=image_path,
+                    pred_value=None,
+                    real_value=true_value_num,
+                )
                 continue
 
-            result = self._processor.execute(img, filename)
+            source_label = f"{resolved_group}/{resolved_filename}"
+            result = self._processor.execute(img, source_label)
             if not result:
                 continue
 
@@ -161,14 +194,20 @@ class PipelineApp:
                 rejected=bool(result.quality_rejected),
             )
 
-            true_value_text = f"{float(true_value):.2f}" if pd.notna(true_value) else "-"
-            file_col = self._truncate_filename(filename, width=28)
+            file_col = self._truncate_filename(resolved_filename, width=28)
 
             if result.quality_rejected:
                 print(
-                    f"{idx:>3}  {file_col:<28} {group:<4} "
-                    f"{'-':>4} {true_count:>4} {'-':>+4} {'-':>4} "
+                    f"{idx:>3}  {file_col:<28} {resolved_group:<4} "
+                    f"{'-':>4} {true_count:>4} {'-':>4} {'-':>4} "
                     f"{'-':>7} {true_value_text:>7} {'-':>7} {'QER':<3}"
+                )
+                self._print_image_value_trace(
+                    image_name=resolved_filename,
+                    expected_folder=group_annot,
+                    src_path=image_path,
+                    pred_value=None,
+                    real_value=true_value_num,
                 )
                 if result.quality_warnings:
                     print(f"  qgate: {', '.join(result.quality_warnings)}")
@@ -179,9 +218,7 @@ class PipelineApp:
             diff = pred - true_count
             pred_value = float(result.estimated_value_eur)
             value_diff = None
-            true_value_num = None
-            if pd.notna(true_value):
-                true_value_num = float(true_value)
+            if true_value_num is not None:
                 value_diff = pred_value - true_value_num
 
             stats.update(
@@ -195,9 +232,16 @@ class PipelineApp:
             status = "OK" if diff == 0 else "ERR"
             value_diff_text = f"{value_diff:+.2f}" if value_diff is not None else "-"
             print(
-                f"{idx:>3}  {file_col:<28} {group:<4} "
+                f"{idx:>3}  {file_col:<28} {resolved_group:<4} "
                 f"{pred:>4} {true_count:>4} {diff:>+4} {result.labeled_coin_count:>4} "
                 f"{pred_value:>7.2f} {true_value_text:>7} {value_diff_text:>7} {status:<3}"
+            )
+            self._print_image_value_trace(
+                image_name=resolved_filename,
+                expected_folder=group_annot,
+                src_path=image_path,
+                pred_value=pred_value,
+                real_value=true_value_num,
             )
 
             if result.quality_warnings:
@@ -218,7 +262,7 @@ class PipelineApp:
             if self._runtime.SAVE_STEPS:
                 saved = self._visualizer.save_pipeline_steps(result, self._runtime.OUT_DIR)
                 if saved:
-                    print(f"[SAVED] {saved}")
+                    print(f"[SAVED] {self._short_path(saved, width=56)}")
 
         stats.print_summary()
 
@@ -234,6 +278,22 @@ class PipelineApp:
         if len(filename) <= width:
             return filename
         return f"...{filename[-(width - 3):]}"
+
+    def _short_path(self, path_text: Optional[str], width: int = 44) -> str:
+        if not path_text:
+            return "-"
+
+        path_obj = Path(path_text)
+        short_text = path_obj.as_posix()
+        base_dir = Path(self._runtime.IMAGE_DIRECTORY).resolve()
+        try:
+            short_text = path_obj.resolve().relative_to(base_dir).as_posix()
+        except Exception:
+            short_text = path_obj.as_posix()
+
+        if len(short_text) <= width:
+            return short_text
+        return f"...{short_text[-(width - 3):]}"
 
     def _format_label_hist(self, labels, expected_count: Optional[int] = None):
         counts = {}
@@ -253,6 +313,27 @@ class PipelineApp:
         if unknown_count > 0:
             parts.append(f"unknown x{unknown_count}")
         return ", ".join(parts)
+
+    def _print_image_value_trace(
+        self,
+        *,
+        image_name: str,
+        expected_folder: str,
+        src_path: Optional[str],
+        pred_value: Optional[float],
+        real_value: Optional[float],
+    ):
+        pred_text = f"{float(pred_value):.2f}" if pred_value is not None else "-"
+        real_text = f"{float(real_value):.2f}" if real_value is not None else "-"
+        folder_text = expected_folder
+        if src_path is not None:
+            resolved_folder = Path(src_path).parent.name
+            folder_text = resolved_folder if resolved_folder == expected_folder else f"{resolved_folder} (ann:{expected_folder})"
+        src_text = self._short_path(src_path, width=44)
+        print(
+            f"      image={image_name} | folder={folder_text} | src={src_text} | "
+            f"value={pred_text} | real_value={real_text}"
+        )
 
 
 class AppRunner:

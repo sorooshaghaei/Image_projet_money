@@ -13,6 +13,18 @@ from .models import PipelineResult
 from .processor import CoinProcessor
 
 
+def _source_path_text(source: str) -> str:
+    return Path(source).as_posix()
+
+
+def _truncate_middle(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    keep_left = max(10, (width // 2) - 2)
+    keep_right = max(10, width - keep_left - 3)
+    return f"{text[:keep_left]}...{text[-keep_right:]}"
+
+
 class PipelineVisualizer:
     """Saves static montage images of pipeline stages for one processed input."""
 
@@ -26,13 +38,18 @@ class PipelineVisualizer:
         cols = 4
         rows = ceil(len(steps) / cols)
         fig, axes = plt.subplots(rows, cols, figsize=(4.5 * cols, 4.0 * rows))
+        source_path = _source_path_text(result.source_filename)
+        short_path = _truncate_middle(source_path, 120)
         fig.suptitle(
             (
-                f"{result.source_filename} | pred={result.coin_count} | "
-                f"labeled={result.labeled_coin_count} | value={result.estimated_value_eur:.2f} EUR | "
-                f"inverted={result.is_inverted}"
+                f"image: {short_path}\n"
+                f"label={result.labeled_coin_count}  pred={result.coin_count}  "
+                f"value={result.estimated_value_eur:.2f} EUR  inverted={result.is_inverted}"
             ),
-            fontsize=14,
+            fontsize=11,
+            x=0.01,
+            ha="left",
+            y=0.98,
         )
 
         axes_matrix = np.array(axes, dtype=object).reshape(rows, cols)
@@ -47,7 +64,7 @@ class PipelineVisualizer:
                 ax.imshow(step.image, cmap="gray")
             ax.set_title(step.name, fontsize=11)
 
-        plt.tight_layout()
+        plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
         out_path = Path(out_dir) / f"{Path(result.source_filename).stem}_pipeline.png"
         fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
         plt.close(fig)
@@ -121,7 +138,7 @@ class HoughTuningBrowser:
         gs = self._fig.add_gridspec(
             self._GRID_ROWS,
             self._GRID_COLS,
-            top=0.89,
+            top=0.84,
             bottom=0.33,
             left=0.03,
             right=0.99,
@@ -217,15 +234,22 @@ class HoughTuningBrowser:
     def _render(self, res: PipelineResult):
         p = self._params()
         fname = self._filenames[self._idx]
+        source_path = _source_path_text(fname)
+        short_path = _truncate_middle(source_path, 138)
 
         self._fig.suptitle(
-            f"[{self._idx + 1}/{len(self._originals)}] {fname} | pred={res.coin_count} | labeled={res.labeled_coin_count} "
-            f"| value={res.estimated_value_eur:.2f} EUR | inv={res.is_inverted} | "
-            f"dp={p['dp']:.1f} minDist={p['minDist']} p1={p['param1']} p2={p['param2']} "
-            f"minR={p['minRadius']} maxR={p['maxRadius']} | "
-            f"mode={'fast' if self._fast_mode else 'full'} | t={self._last_compute_ms:.0f}ms | "
-            f"(a/d or arrows nav, f fast, l lock, r reset, q/esc quit)",
-            fontsize=12,
+            (
+                f"[{self._idx + 1}/{len(self._originals)}] image: {short_path}\n"
+                f"label={res.labeled_coin_count}  pred={res.coin_count}  value={res.estimated_value_eur:.2f} EUR  "
+                f"inverted={res.is_inverted}\n"
+                f"hough: dp={p['dp']:.1f}  minDist={p['minDist']}  p1={p['param1']}  p2={p['param2']}  "
+                f"minR={p['minRadius']}  maxR={p['maxRadius']}  mode={'fast' if self._fast_mode else 'full'}  "
+                f"compute={self._last_compute_ms:.0f}ms"
+            ),
+            fontsize=10,
+            x=0.01,
+            ha="left",
+            y=0.985,
         )
 
         for idx, ax in enumerate(self._axes.flat):
@@ -245,12 +269,9 @@ class HoughTuningBrowser:
         if self._status_text is not None:
             self._status_text.set_text(
                 (
-                    f"Image {self._idx + 1}/{len(self._originals)}   "
-                    f"Detected {res.coin_count}   Labeled {res.labeled_coin_count}   "
-                    f"Value {res.estimated_value_eur:.2f} EUR   "
-                    f"Compute {self._last_compute_ms:.0f} ms\n"
-                    f"Mode: {'Fast preview (detection only)' if self._fast_mode else 'Full pipeline (detection + value)'}   "
-                    f"Zoom: mouse wheel | reset zoom: right click"
+                    f"path: {source_path}\n"
+                    f"controls: a/d or arrows=nav  f=fast  l=lock  r=reset  q/esc=quit  "
+                    f"zoom=wheel  reset-zoom=right-click"
                 )
             )
 

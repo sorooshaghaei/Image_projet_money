@@ -33,7 +33,7 @@ class CoinProcessor:
     - Fit one global px/mm scale per image for consistent value assignment.
     """
 
-    _COLOR_MISMATCH_PENALTY: float = 0.10
+    _COLOR_MISMATCH_PENALTY: float = 0.05
     # High-confidence bimetal guardrail to avoid mapping 1EUR/2EUR to tiny bronze coins.
     _BIMETAL_HIGH_CONFIDENCE: float = 0.58
     _BIMETAL_STRONG_2E_MARGIN: float = 0.10
@@ -114,9 +114,10 @@ class CoinProcessor:
         coin_count = len(circles)
         coin_tags = [self._coin_tag(i) for i in range(coin_count)]
         coin_radii = [float(c[2]) for c in circles]
+        color_img = self._prepare_color_input(img_bgr_resized)
 
         if classify:
-            class_result = self._classify_circles(img_bgr_resized, circles, coin_radii)
+            class_result = self._classify_circles(color_img, circles, coin_radii)
         else:
             class_result = self._build_unclassified_result(coin_count)
 
@@ -187,6 +188,44 @@ class CoinProcessor:
         blurred = cv2.medianBlur(gray, blur_kernel)
         steps.append(PipelineStep("3. Median Blur", blurred, "gray"))
         return gray, blurred, inverted
+
+    def _prepare_color_input(self, img_bgr: np.ndarray) -> np.ndarray:
+        """
+        Normalize color/illumination before color-group scoring.
+
+        This reduces warm/cool cast sensitivity on phone captures.
+        """
+        if not bool(getattr(self._cfg, "COLOR_NORMALIZATION_ENABLED", True)):
+            return img_bgr
+
+        color_img = img_bgr.copy()
+        if bool(getattr(self._cfg, "COLOR_GRAYWORLD_WHITE_BALANCE", True)):
+            color_img = self._grayworld_white_balance(color_img)
+
+        lab = cv2.cvtColor(color_img, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        tile = max(2, int(getattr(self._cfg, "COLOR_CLAHE_TILE_GRID", 8)))
+        clahe = cv2.createCLAHE(
+            clipLimit=float(getattr(self._cfg, "COLOR_CLAHE_CLIP_LIMIT", 2.5)),
+            tileGridSize=(tile, tile),
+        )
+        l_eq = clahe.apply(l)
+        color_img = cv2.cvtColor(cv2.merge((l_eq, a, b)), cv2.COLOR_LAB2BGR)
+
+        k = int(max(3, getattr(self._cfg, "COLOR_DENOISE_KERNEL_SIZE", 5)))
+        if k % 2 == 0:
+            k += 1
+        color_img = cv2.medianBlur(color_img, k)
+        return color_img
+
+    def _grayworld_white_balance(self, img_bgr: np.ndarray) -> np.ndarray:
+        """Simple gray-world WB to reduce global color cast."""
+        img_f = img_bgr.astype(np.float32)
+        channel_means = np.mean(img_f.reshape(-1, 3), axis=0)
+        gray_mean = float(np.mean(channel_means))
+        scales = gray_mean / np.maximum(channel_means, 1e-6)
+        balanced = img_f * scales
+        return np.clip(balanced, 0, 255).astype(np.uint8)
 
     def _sanitize_hough_params(
         self,

@@ -10,13 +10,6 @@ Date: 2026-02-19
 Scan outputs are saved in:
 - `report/dataset_image_scan.csv`
 
-Important execution note:
-- In this environment, `cv2` is not installed and internet access is blocked, so I could not rerun the OpenCV pipeline end-to-end here.
-- This report therefore combines:
-  - full dataset image scan results,
-  - code-based analysis of the implemented pipeline,
-  - method tradeoff analysis for OpenCV approaches.
-
 ---
 
 ## Dataset Findings From Full Scan
