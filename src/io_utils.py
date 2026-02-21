@@ -1,24 +1,31 @@
 from pathlib import Path
-from typing import Optional
+
+import cv2
+import numpy as np
 
 
-class ImagePathResolver:
-    def __init__(self, base_dir: str):
-        self._base_dir = Path(base_dir)
+def read_bgr_or_raise(image_path: Path) -> np.ndarray:
+    image_bgr = cv2.imread(str(image_path))
+    if image_bgr is None:
+        raise FileNotFoundError(f"Could not read image at {image_path.resolve()}")
+    return image_bgr
 
-    def resolve(self, filename: str, group: str) -> Optional[str]:
-        path_grouped = self._base_dir / group / filename
-        if path_grouped.exists():
-            return str(path_grouped)
 
-        if group.startswith("grp"):
-            alt_group = group.replace("grp", "gp")
-            path_alt = self._base_dir / alt_group / filename
-            if path_alt.exists():
-                return str(path_alt)
+def letterbox_resize_to_canvas(image_bgr: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+    height, width = image_bgr.shape[:2]
+    if height <= 0 or width <= 0:
+        raise ValueError("Input image has invalid dimensions")
 
-        path_flat = self._base_dir / filename
-        if path_flat.exists():
-            return str(path_flat)
+    scale = min(target_w / width, target_h / height)
+    new_w = max(1, int(width * scale))
+    new_h = max(1, int(height * scale))
 
-        return None
+    interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
+    resized = cv2.resize(image_bgr, (new_w, new_h), interpolation=interpolation)
+
+    canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+    x_off = (target_w - new_w) // 2
+    y_off = (target_h - new_h) // 2
+    canvas[y_off : y_off + new_h, x_off : x_off + new_w] = resized
+    return canvas
+

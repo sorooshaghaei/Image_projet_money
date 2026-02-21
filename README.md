@@ -80,6 +80,36 @@ pip install -r requirements.txt
 * Scripts should be modular, documented, and reproducible.
 * Experiments and temporary files should not be committed unless explicitly required.
 
+### Notebook-Based Circle Pipeline (structured)
+
+The notebook logic from `fucking_end_new_params.ipynb` is now available as a structured CLI pipeline:
+
+```bash
+source .venv/bin/activate
+python main.py
+```
+
+What it does:
+* Iterates over all images under `data/images/`
+* Runs the processing pipeline (letterbox -> CLAHE -> grayscale -> blur -> Hough circles)
+* Compares predicted coin count to ground truth annotations
+* Opens an interactive pipeline viewer
+
+Viewer controls:
+* `Right`, `d`, `Space`: next image
+* `Left`, `a`: previous image
+* `q` or `Esc`: quit viewer
+
+Useful options:
+
+```bash
+python main.py --no-view --limit 20
+python main.py --preset exp
+python main.py --save-dir outputs/pipeline
+python main.py --dataset-dir /path/to/other/images
+python main.py --eval-groups gp1 gp2
+```
+
 ---
 
 ## Report & Defense
@@ -110,4 +140,3 @@ pip install -r requirements.txt
 ## License
 
 This project is for **academic use only**.
-
