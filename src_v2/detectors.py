@@ -1,48 +1,32 @@
 from __future__ import annotations
 
 from math import pi, sqrt
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 
+from src.config import DetectionConfig as BaseHoughConfig
+from src.processor_circles import CircleDetector as BaseHoughDetector
+
 from .config import ContourSettings, HoughSettings, PolicySettings, WatershedSettings
 from .models import Circle
 
-
-def prepare_gray(img_bgr: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    gray = cv2.normalize(gray, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
-    if float(np.mean(gray)) < 105.0:
-        gray = cv2.bitwise_not(gray)
-    return gray
-
-
-def build_binary_mask(gray: np.ndarray, cfg: ContourSettings) -> np.ndarray:
-    k = _odd(cfg.blur_kernel)
-    blur = cv2.GaussianBlur(gray, (k, k), 0)
-
-    _, bw = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    border = _border_mask(gray.shape[0], gray.shape[1])
-    border_white_ratio = float(np.mean(bw[border > 0] > 0))
-    if border_white_ratio > 0.50:
-        bw = cv2.bitwise_not(bw)
-
-    mk = max(1, int(cfg.morph_kernel))
-    kernel = np.ones((mk, mk), dtype=np.uint8)
-    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel)
-    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kernel)
-    return bw
+_BASE_HOUGH_DETECTOR = BaseHoughDetector(BaseHoughConfig())
 
 
 def detect_hough_circles(gray: np.ndarray, cfg: HoughSettings) -> List[Circle]:
-    blur = cv2.medianBlur(gray, _odd(5))
+    """Detect circles using the shared Hough ensemble from `src`.
+
+    Reusing the original detector keeps behavior close to your stronger `src` baseline
+    while allowing `src_v2` policy routing around it.
+    """
+    blur = cv2.medianBlur(gray, _odd(15))
     min_r = max(1, int(cfg.min_radius))
     max_r = max(min_r + 1, int(cfg.max_radius))
-
-    circles = cv2.HoughCircles(
-        blur,
-        cv2.HOUGH_GRADIENT,
+    circles = _BASE_HOUGH_DETECTOR.detect_ensemble(
+        gray=gray,
+        blurred=blur,
         dp=max(0.5, float(cfg.dp)),
         minDist=max(1, int(cfg.min_dist)),
         param1=max(1, int(cfg.param1)),
@@ -50,20 +34,17 @@ def detect_hough_circles(gray: np.ndarray, cfg: HoughSettings) -> List[Circle]:
         minRadius=min_r,
         maxRadius=max_r,
     )
-    if circles is None:
-        return []
-
-    squeezed = np.squeeze(circles, axis=0)
-    if squeezed.ndim == 1:
-        squeezed = np.expand_dims(squeezed, axis=0)
-
-    out: List[Circle] = []
-    for x, y, r in squeezed:
-        out.append(Circle(int(round(x)), int(round(y)), int(round(r))))
-    return _dedupe(out)
+    return _dedupe([Circle(int(x), int(y), int(r)) for x, y, r in circles])
 
 
 def detect_contour_circles(mask: np.ndarray, contour_cfg: ContourSettings, policy_cfg: PolicySettings) -> Tuple[List[Circle], float]:
+    """Detect near-circular components from the binary mask.
+
+    Returns:
+    - candidate circles
+    - merge_score: fraction of significant regions that look like merged coins
+      (used by policy to infer overlap complexity).
+    """
     contours_info = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = contours_info[0] if len(contours_info) == 2 else contours_info[1]
 
@@ -83,7 +64,7 @@ def detect_contour_circles(mask: np.ndarray, contour_cfg: ContourSettings, polic
             continue
 
         circularity = float((4.0 * pi * area) / (perimeter * perimeter))
-        x, y, w, h = cv2.boundingRect(contour)
+        _, _, w, h = cv2.boundingRect(contour)
         aspect = float(max(w, h) / max(1, min(w, h)))
 
         area_ratio = area / max(1.0, image_area)
@@ -92,6 +73,7 @@ def detect_contour_circles(mask: np.ndarray, contour_cfg: ContourSettings, polic
             and circularity < float(policy_cfg.contour_merge_circularity)
             and aspect >= 1.30
         ):
+            # Large elongated blobs are often multiple touching coins.
             merge_like += 1
 
         if circularity < float(contour_cfg.min_circularity):
@@ -112,12 +94,14 @@ def detect_watershed_circles(
     watershed_cfg: WatershedSettings,
     contour_cfg: ContourSettings,
 ) -> Tuple[List[Circle], np.ndarray]:
+    """Split merged foreground regions with watershed and fit circles per region."""
     if cv2.countNonZero(mask) <= 0:
         return [], np.zeros_like(img_bgr)
 
     work = mask.copy()
     open_k = _odd(watershed_cfg.open_kernel)
     close_k = _odd(watershed_cfg.close_kernel)
+    # Stabilize seeds before distance transform.
     work = cv2.morphologyEx(work, cv2.MORPH_OPEN, np.ones((open_k, open_k), dtype=np.uint8))
     work = cv2.morphologyEx(work, cv2.MORPH_CLOSE, np.ones((close_k, close_k), dtype=np.uint8))
 
@@ -127,6 +111,7 @@ def detect_watershed_circles(
         return [], np.zeros_like(img_bgr)
 
     fg_ratio = float(np.clip(watershed_cfg.fg_ratio, 0.20, 0.85))
+    # "sure_fg" are seed cores; clipped ratio prevents extremely weak/strong seeding.
     sure_fg = np.where(dist >= (fg_ratio * max_dist), 255, 0).astype(np.uint8)
     sure_fg = _remove_small_components(sure_fg, int(max(1, watershed_cfg.min_seed_area)))
 
@@ -167,6 +152,7 @@ def detect_watershed_circles(
 
 
 def count_hough_overlap_pairs(circles: Sequence[Circle], distance_scale: float) -> int:
+    """Count close circle pairs as a proxy for overlap/touching density."""
     overlap_pairs = 0
     scale = float(max(0.10, distance_scale))
     for i in range(len(circles)):
@@ -180,6 +166,7 @@ def count_hough_overlap_pairs(circles: Sequence[Circle], distance_scale: float) 
 
 
 def merge_circle_sets(primary: Sequence[Circle], secondary: Sequence[Circle]) -> List[Circle]:
+    """Union of two detector outputs with geometric de-duplication."""
     out: List[Circle] = []
     for circle in list(primary) + list(secondary):
         if any(_is_duplicate(circle, existing) for existing in out):
@@ -189,56 +176,59 @@ def merge_circle_sets(primary: Sequence[Circle], secondary: Sequence[Circle]) ->
     return out
 
 
-def draw_overlay(img_bgr: np.ndarray, circles: Sequence[Circle], method_label: str) -> np.ndarray:
+def draw_overlay(
+    img_bgr: np.ndarray,
+    circles: Sequence[Circle],
+    method_label: str,
+    coin_labels: Optional[Sequence[Optional[int]]] = None,
+) -> np.ndarray:
+    """Render circles and optional denomination labels for debugging/UI."""
     overlay = img_bgr.copy()
-    for idx, circle in enumerate(circles, start=1):
-        cv2.circle(overlay, (circle.x, circle.y), circle.r, (0, 255, 0), 2)
-        cv2.circle(overlay, (circle.x, circle.y), 2, (0, 0, 255), -1)
+
+    def _put_text_with_outline(
+        image: np.ndarray,
+        text: str,
+        org: Tuple[int, int],
+        font_scale: float,
+        color: Tuple[int, int, int] = (255, 255, 255),
+    ) -> None:
         cv2.putText(
-            overlay,
-            str(idx),
-            (circle.x + 3, circle.y - 4),
+            image,
+            text,
+            org,
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (255, 255, 255),
+            float(font_scale),
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            text,
+            org,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            float(font_scale),
+            color,
             1,
             cv2.LINE_AA,
         )
 
-    cv2.putText(
-        overlay,
-        f"method: {method_label}",
-        (10, 24),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        overlay,
-        f"coins: {len(circles)}",
-        (10, 50),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
+    for idx, circle in enumerate(circles, start=1):
+        cv2.circle(overlay, (circle.x, circle.y), circle.r, (0, 255, 0), 2)
+        cv2.circle(overlay, (circle.x, circle.y), 2, (0, 0, 255), -1)
+        denom_text = ""
+        if coin_labels is not None and idx - 1 < len(coin_labels):
+            denom = coin_labels[idx - 1]
+            denom_text = "?" if denom is None else f" {int(denom)}c"
+        _put_text_with_outline(overlay, f"{idx}{denom_text}", (circle.x + 3, circle.y - 4), 0.50)
+
+    _put_text_with_outline(overlay, f"method: {method_label}", (10, 24), 0.65)
+    _put_text_with_outline(overlay, f"coins: {len(circles)}", (10, 50), 0.65)
     return overlay
 
 
-def _border_mask(h: int, w: int, frac: float = 0.08) -> np.ndarray:
-    border = max(4, int(round(min(h, w) * frac)))
-    mask = np.zeros((h, w), dtype=np.uint8)
-    mask[:border, :] = 255
-    mask[-border:, :] = 255
-    mask[:, :border] = 255
-    mask[:, -border:] = 255
-    return mask
-
-
 def _remove_small_components(mask: np.ndarray, min_area: int) -> np.ndarray:
+    """Keep only connected components above the minimum area threshold."""
     num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     if num <= 1:
         return mask
@@ -251,6 +241,7 @@ def _remove_small_components(mask: np.ndarray, min_area: int) -> np.ndarray:
 
 
 def _markers_to_rgb(markers: np.ndarray) -> np.ndarray:
+    """Colorize watershed labels for human inspection in the visualizer."""
     h, w = markers.shape[:2]
     out = np.zeros((h, w, 3), dtype=np.uint8)
     for label in np.unique(markers):
@@ -263,6 +254,7 @@ def _markers_to_rgb(markers: np.ndarray) -> np.ndarray:
 
 
 def _label_color(label: int) -> Tuple[int, int, int]:
+    """Deterministic pseudo-color for a label id."""
     b = (53 * label + 80) % 255
     g = (97 * label + 20) % 255
     r = (151 * label + 180) % 255
@@ -270,6 +262,7 @@ def _label_color(label: int) -> Tuple[int, int, int]:
 
 
 def _dedupe(circles: Sequence[Circle]) -> List[Circle]:
+    """Remove duplicate detections and return stable top-to-bottom ordering."""
     out: List[Circle] = []
     for circle in circles:
         if any(_is_duplicate(circle, existing) for existing in out):
@@ -280,6 +273,7 @@ def _dedupe(circles: Sequence[Circle]) -> List[Circle]:
 
 
 def _is_duplicate(a: Circle, b: Circle) -> bool:
+    """Heuristic duplicate test based on center distance and radius similarity."""
     dist = sqrt(float((a.x - b.x) ** 2 + (a.y - b.y) ** 2))
     center_thr = 0.50 * float(max(a.r, b.r))
     radius_thr = 0.42 * float(max(a.r, b.r))
@@ -287,5 +281,6 @@ def _is_duplicate(a: Circle, b: Circle) -> bool:
 
 
 def _odd(value: int) -> int:
+    """Return nearest odd integer >= 1 for OpenCV kernel sizes."""
     v = int(max(1, value))
     return v if v % 2 == 1 else v + 1

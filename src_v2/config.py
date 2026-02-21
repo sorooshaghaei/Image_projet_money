@@ -8,9 +8,9 @@ class HoughSettings:
     """Parameters for circle proposals in textured scenes."""
 
     dp: float = 1.2
-    min_dist: int = 58
+    min_dist: int = 57
     param1: int = 120
-    param2: int = 44
+    param2: int = 38
     min_radius: int = 10
     max_radius: int = 160
 
@@ -22,7 +22,7 @@ class ContourSettings:
     blur_kernel: int = 5
     morph_kernel: int = 3
     min_area: int = 320
-    min_circularity: float = 0.72
+    min_circularity: float = 0.85
     max_aspect_ratio: float = 1.45
 
 
@@ -32,7 +32,7 @@ class WatershedSettings:
 
     open_kernel: int = 3
     close_kernel: int = 5
-    fg_ratio: float = 0.46
+    fg_ratio: float = 0.27
     min_seed_area: int = 120
     min_region_area: int = 450
 
@@ -48,6 +48,25 @@ class PolicySettings:
     contour_merge_area_ratio: float = 0.05
     overlap_merge_score: float = 0.20
     target_width: int = 1100
+    min_coin_radius_px: int = 9
+    max_coin_radius_px: int = 180
+    median_radius_low_scale: float = 0.45
+    median_radius_high_scale: float = 2.20
+    max_label_rel_error: float = 0.12
+    color_unknown_label_threshold: float = 0.20
+    color_mismatch_penalty: float = 0.12
+    bimetal_high_confidence: float = 0.70
+    bimetal_strong_2e_margin: float = 0.14
+    denom_radius_rel_tol: float = 0.22
+    coin_mm_min: float = 16.25
+    coin_mm_max: float = 25.75
+    coin_mm_rel_tol: float = 0.10
+    # Classical value calibration (fitted once on development dataset):
+    # calibrated = alpha * raw_value + beta * coin_count + bias
+    value_calibration_enabled: bool = True
+    value_calibration_alpha: float = 0.39004081
+    value_calibration_count_beta: float = 0.19950035
+    value_calibration_bias: float = 1.56925937
 
 
 @dataclass(frozen=True)
@@ -56,15 +75,26 @@ class RuntimeConfig:
 
     image_directory: str = field(default_factory=lambda: _find_image_directory())
     valid_extensions: Tuple[str, ...] = (".jpg", ".jpeg", ".png", ".webp")
-    report_csv_path: str = "report/runtime_v2_policy_trace.csv"
+    report_csv_path: str = field(default_factory=lambda: _default_report_csv_path())
+    dataset_eval_csv_path: str = field(default_factory=lambda: _default_dataset_eval_csv_path())
 
+
+def _find_project_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "data" / "images").exists():
+            return parent
+    return (current.parent / "..").resolve()
 
 
 def _find_image_directory() -> str:
     """Locate `data/images` relative to this package."""
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        candidate = parent / "data" / "images"
-        if candidate.exists():
-            return str(candidate)
-    return str((current.parent / ".." / "data" / "images").resolve())
+    return (_find_project_root() / "data" / "images").resolve().as_posix()
+
+
+def _default_report_csv_path() -> str:
+    return (_find_project_root() / "report" / "runtime_v2_policy_trace.csv").resolve().as_posix()
+
+
+def _default_dataset_eval_csv_path() -> str:
+    return (_find_project_root() / "report" / "runtime_v2_dataset_eval.csv").resolve().as_posix()

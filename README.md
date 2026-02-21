@@ -72,6 +72,11 @@ This prints a per-image trace in terminal including:
 
 Use `--visualize` to open the interactive parameter visualizer.
 
+Evaluate `src_v2` against dataset annotations (count + value + metrics):
+```bash
+.venv/bin/python main_v2.py --evaluate-dataset --mode auto --csv report/runtime_v2_dataset_eval.csv
+```
+
 ## Data and Annotations
 Images are expected in:
 - `data/images/<group>/<image_name>`

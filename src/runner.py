@@ -82,8 +82,6 @@ class RunStats:
                 value_rel_error_pct = (self.total_abs_value_error / self.total_true_value) * 100.0
                 value_accuracy = max(0.0, 100.0 - value_rel_error_pct)
 
-        general_accuracy = (detection_recall + value_accuracy) / 2.0 if self.processed_value > 0 else detection_recall
-
         print("\n" + "=" * 90)
         print("Summary")
         print("-" * 90)
@@ -101,7 +99,6 @@ class RunStats:
             print(f"Value Accuracy:   {value_accuracy:.2f}%")
         else:
             print("Value Accuracy:   N/A")
-        print(f"General Accuracy: {general_accuracy:.2f}%")
         print("=" * 90)
 
 

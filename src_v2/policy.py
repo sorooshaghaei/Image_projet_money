@@ -28,6 +28,7 @@ def choose_auto_method(background_label: BackgroundLabel, likely_overlap: bool, 
     """Route to an algorithm according to the requested strategy."""
     if likely_overlap:
         return "hough+watershed" if hough_count > 0 else "watershed"
-    if background_label == "easy":
-        return "contours"
-    return "hough"
+    # For accuracy, use hough as the default detector even on easy scenes.
+    # Contours remain a fallback when hough fails to produce candidates.
+    _ = background_label
+    return "hough" if hough_count > 0 else "contours"

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
 
 def list_image_paths(path_text: str, valid_extensions: Sequence[str]) -> List[Path]:
