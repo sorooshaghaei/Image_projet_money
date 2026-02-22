@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from src.coin_metadata import COIN_DIAMETER_MM
+from src.coin_metadata import COIN_DIAMETER_MM, COLOR_UNKNOWN
 from src.processor_color import CoinColorClassifier
 from src.processor_scale import ScaleValueClassifier
 
@@ -21,7 +21,13 @@ from .detectors import (
 )
 from .models import AnalysisResult, Circle, DebugFrames, SceneMetrics
 from .policy import choose_auto_method, classify_background
-from .preprocessing import build_binary_mask, build_edge_map, prepare_gray, resize_if_needed
+from .preprocessing import (
+    build_binary_mask,
+    build_edge_map,
+    normalize_color_for_classification,
+    prepare_gray,
+    resize_if_needed,
+)
 
 
 class HybridCoinAnalyzer:
@@ -71,6 +77,7 @@ class HybridCoinAnalyzer:
 
         # Shared preprocessing used by all detector families.
         resized = resize_if_needed(img_bgr, int(policy_cfg.target_width))
+        scene_sat_median, scene_sat_p75 = self._scene_saturation_stats(resized)
         gray = prepare_gray(resized)
         edges = build_edge_map(gray, threshold1=60, threshold2=150)
         binary = build_binary_mask(gray, contour_cfg)
@@ -95,11 +102,27 @@ class HybridCoinAnalyzer:
                 contour_circles, merge_score = detect_contour_circles(binary, contour_cfg, policy_cfg)
                 circles = contour_circles
             else:
-                circles = detect_hough_circles(gray, hough_cfg)
+                circles = self._detect_hough_with_dynamic_controls(
+                    gray=gray,
+                    binary=binary,
+                    background_label=background_label,
+                    base_hough_cfg=hough_cfg,
+                    policy_cfg=policy_cfg,
+                    scene_sat_median=scene_sat_median,
+                    scene_sat_p75=scene_sat_p75,
+                )
         else:
             # Full mode computes both lightweight proposals first; policy selects best path.
             contour_circles, merge_score = detect_contour_circles(binary, contour_cfg, policy_cfg)
-            hough_circles = detect_hough_circles(gray, hough_cfg)
+            hough_circles = self._detect_hough_with_dynamic_controls(
+                gray=gray,
+                binary=binary,
+                background_label=background_label,
+                base_hough_cfg=hough_cfg,
+                policy_cfg=policy_cfg,
+                scene_sat_median=scene_sat_median,
+                scene_sat_p75=scene_sat_p75,
+            )
             overlap_pairs = count_hough_overlap_pairs(hough_circles, policy_cfg.overlap_distance_scale)
             pair_total = (len(hough_circles) * max(0, len(hough_circles) - 1)) / 2.0
             overlap_ratio = float(overlap_pairs / pair_total) if pair_total > 0 else 0.0
@@ -156,6 +179,8 @@ class HybridCoinAnalyzer:
             background_label=background_label,
             policy_cfg=policy_cfg,
             max_rel_error=float(policy_cfg.max_label_rel_error),
+            scene_sat_median=scene_sat_median,
+            scene_sat_p75=scene_sat_p75,
         )
         overlay = draw_overlay(resized, circles, selected_method, coin_labels)
         metrics = SceneMetrics(
@@ -196,6 +221,8 @@ class HybridCoinAnalyzer:
         background_label: str,
         policy_cfg: PolicySettings,
         max_rel_error: float,
+        scene_sat_median: float,
+        scene_sat_p75: float,
     ) -> Tuple[List[Optional[int]], List[str], List[Optional[float]], float, int]:
         """Map each circle to denomination with color + size constraints.
 
@@ -211,14 +238,24 @@ class HybridCoinAnalyzer:
         if self._color_classifier is None or self._scale_classifier is None:
             self._refresh_classifiers_if_needed()
 
+        color_img = normalize_color_for_classification(img_bgr)
         features = [
             self._color_classifier.extract_coin_features(
-                img_bgr,
+                color_img,
                 np.asarray([circle.x, circle.y, circle.r], dtype=np.int32),
             )
             for circle in circles
         ]
-        coin_color_labels, group_scores = self._color_classifier.classify_color_groups(features)
+        _coin_color_labels_unused, group_scores = self._color_classifier.classify_color_groups(features)
+        dynamic_unknown_threshold = self._dynamic_unknown_label_threshold(
+            policy_cfg=policy_cfg,
+            scene_sat_median=scene_sat_median,
+            scene_sat_p75=scene_sat_p75,
+        )
+        coin_color_labels = self._labels_from_group_scores(
+            group_scores=group_scores,
+            unknown_threshold=dynamic_unknown_threshold,
+        )
         candidate_denoms_per_coin = [
             self._color_classifier.candidate_denoms_from_group_scores(scores) for scores in group_scores
         ]
@@ -286,6 +323,138 @@ class HybridCoinAnalyzer:
         )
         self._classifier_signature = signature
 
+    def _dynamic_unknown_label_threshold(
+        self,
+        *,
+        policy_cfg: PolicySettings,
+        scene_sat_median: float,
+        scene_sat_p75: float,
+    ) -> float:
+        """Adjust unknown-label threshold from scene saturation statistics."""
+        base = float(policy_cfg.color_unknown_label_threshold)
+        delta = 0.0
+
+        sat_low = float(policy_cfg.color_scene_sat_low)
+        sat_high = float(policy_cfg.color_scene_sat_high)
+        sat_p75_high = float(policy_cfg.color_scene_sat_p75_high)
+
+        if scene_sat_median < sat_low:
+            delta -= 0.05 * min(1.0, (sat_low - scene_sat_median) / max(1.0, sat_low))
+        if scene_sat_median > sat_high:
+            delta += 0.08 * min(1.0, (scene_sat_median - sat_high) / max(1.0, 255.0 - sat_high))
+        if scene_sat_p75 > sat_p75_high:
+            delta += 0.04 * min(1.0, (scene_sat_p75 - sat_p75_high) / max(1.0, 255.0 - sat_p75_high))
+
+        return float(np.clip(base + delta, 0.08, 0.38))
+
+    @staticmethod
+    def _labels_from_group_scores(
+        *,
+        group_scores: List[Dict[str, float]],
+        unknown_threshold: float,
+    ) -> List[str]:
+        labels: List[str] = []
+        thr = float(max(0.0, unknown_threshold))
+        for scores in group_scores:
+            if not scores:
+                labels.append(COLOR_UNKNOWN)
+                continue
+            best_label, best_score = max(scores.items(), key=lambda kv: kv[1])
+            labels.append(best_label if float(best_score) >= thr else COLOR_UNKNOWN)
+        return labels
+
+    def _detect_hough_with_dynamic_controls(
+        self,
+        *,
+        gray: np.ndarray,
+        binary: np.ndarray,
+        background_label: str,
+        base_hough_cfg: HoughSettings,
+        policy_cfg: PolicySettings,
+        scene_sat_median: float,
+        scene_sat_p75: float,
+    ) -> List[Circle]:
+        """Run hough with dynamic radius/minDist and guarded sparse-scene rescue."""
+        base_circles = detect_hough_circles(gray, base_hough_cfg)
+        circles = list(base_circles)
+
+        if bool(policy_cfg.dynamic_hough_enabled) and base_circles:
+            radii = np.asarray([float(c.r) for c in base_circles], dtype=np.float32)
+            med_r = float(np.median(radii)) if radii.size > 0 else 0.0
+            if med_r > 1e-6:
+                dyn_cfg = replace(
+                    base_hough_cfg,
+                    min_radius=max(int(base_hough_cfg.min_radius), int(round(0.55 * med_r))),
+                    max_radius=max(int(base_hough_cfg.min_radius) + 1, min(int(base_hough_cfg.max_radius), int(round(2.10 * med_r)))),
+                    min_dist=max(
+                        int(base_hough_cfg.min_dist),
+                        int(round(float(policy_cfg.dynamic_hough_min_dist_scale) * med_r)),
+                    ),
+                    param2=max(1, int(round(float(base_hough_cfg.param2) * float(policy_cfg.dynamic_hough_param2_scale)))),
+                )
+                strict_circles = detect_hough_circles(gray, dyn_cfg)
+                if (
+                    len(base_circles) >= int(max(1, policy_cfg.dynamic_hough_count_threshold))
+                    and strict_circles
+                    and len(strict_circles) < len(base_circles)
+                ):
+                    circles = strict_circles
+
+        can_rescue = (
+            background_label == "easy"
+            and 0 < len(circles) <= int(max(1, policy_cfg.sparse_rescue_max_base_count))
+            and scene_sat_median <= float(policy_cfg.sparse_rescue_sat_median_max)
+            and scene_sat_p75 <= float(policy_cfg.sparse_rescue_sat_p75_max)
+        )
+        if not can_rescue:
+            return circles
+
+        rescue_cfg = replace(
+            base_hough_cfg,
+            dp=max(0.85, float(base_hough_cfg.dp) * float(policy_cfg.sparse_rescue_dp_scale)),
+            min_dist=max(8, int(round(float(base_hough_cfg.min_dist) * float(policy_cfg.sparse_rescue_min_dist_scale)))),
+            param2=max(12, int(round(float(base_hough_cfg.param2) * float(policy_cfg.sparse_rescue_param2_scale)))),
+        )
+        rescue_circles = detect_hough_circles(gray, rescue_cfg)
+        if not rescue_circles:
+            return circles
+
+        accepted = list(circles)
+        max_added = max(1, int(len(circles) // 2))
+        coverage_thr = float(max(0.0, policy_cfg.sparse_rescue_min_mask_coverage))
+        for candidate in rescue_circles:
+            if any(_is_same_or_near_duplicate(candidate, keep) for keep in accepted):
+                continue
+            coverage = self._circle_mask_coverage(binary=binary, circle=candidate)
+            if coverage < coverage_thr:
+                continue
+            accepted.append(candidate)
+            if len(accepted) - len(circles) >= max_added:
+                break
+        return accepted
+
+    @staticmethod
+    def _circle_mask_coverage(*, binary: np.ndarray, circle: Circle) -> float:
+        """Foreground occupancy ratio inside a circle over the binary mask."""
+        h, w = binary.shape[:2]
+        x = int(np.clip(circle.x, 0, w - 1))
+        y = int(np.clip(circle.y, 0, h - 1))
+        r = int(max(1, circle.r))
+
+        x0 = max(0, x - r)
+        x1 = min(w, x + r + 1)
+        y0 = max(0, y - r)
+        y1 = min(h, y + r + 1)
+        if x1 <= x0 or y1 <= y0:
+            return 0.0
+
+        roi = binary[y0:y1, x0:x1]
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        mask = (xx - x) ** 2 + (yy - y) ** 2 <= (r**2)
+        if not np.any(mask):
+            return 0.0
+        return float(np.mean(roi[mask] > 0))
+
     def _is_radius_label_plausible(
         self,
         *,
@@ -341,10 +510,8 @@ class HybridCoinAnalyzer:
                     return "hough"
 
         if method == "hough":
-            # Keep hough as default for accuracy; only fallback on catastrophic over-count.
-            if not likely_overlap and contour_n > 0:
-                if hough_n >= contour_n + 8 and hough_n >= int(round(2.40 * contour_n)):
-                    return "contours"
+            # Keep hough as default for accuracy; avoid switching to contours on over-count,
+            # because contours under-count badly on many simple scenes.
             if likely_overlap and hough_n >= 5 and merge_score >= 0.08:
                 return "hough+watershed"
 
@@ -493,6 +660,17 @@ class HybridCoinAnalyzer:
             return 0.0
         return float(np.std(values) / mean_val)
 
+    @staticmethod
+    def _scene_saturation_stats(img_bgr: np.ndarray) -> Tuple[float, float]:
+        """Return scene saturation stats used for dynamic rescue/color gates."""
+        if img_bgr is None or img_bgr.size == 0:
+            return 0.0, 0.0
+        hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        sat = hsv[:, :, 1].astype(np.float32).reshape(-1)
+        if sat.size <= 0:
+            return 0.0, 0.0
+        return float(np.median(sat)), float(np.percentile(sat, 75))
+
 
 def _canonical_mode(mode: str) -> str:
     mode_text = str(mode or "auto").strip().lower()
@@ -501,3 +679,14 @@ def _canonical_mode(mode: str) -> str:
     if mode_text == "hybrid":
         return "hough+watershed"
     raise ValueError(f"invalid mode: {mode}")
+
+
+def _is_same_or_near_duplicate(a: Circle, b: Circle) -> bool:
+    """Duplicate test tuned for merging sparse rescue circles."""
+    dx = float(a.x - b.x)
+    dy = float(a.y - b.y)
+    dist = float(np.hypot(dx, dy))
+    max_r = float(max(a.r, b.r))
+    if max_r <= 1e-6:
+        return dist <= 1.0
+    return dist <= 0.55 * max_r and abs(float(a.r - b.r)) <= 0.50 * max_r

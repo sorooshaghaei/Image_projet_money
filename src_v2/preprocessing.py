@@ -60,6 +60,37 @@ def build_binary_mask(gray: np.ndarray, cfg: ContourSettings) -> np.ndarray:
     return bw
 
 
+def normalize_color_for_classification(
+    img_bgr: np.ndarray,
+    *,
+    grayworld_white_balance: bool = True,
+    clahe_clip_limit: float = 2.5,
+    clahe_tile_grid: int = 8,
+    denoise_kernel_size: int = 5,
+) -> np.ndarray:
+    """Normalize color dynamic range for more stable material/color inference."""
+    if img_bgr is None or img_bgr.size == 0:
+        return img_bgr
+
+    out = img_bgr.copy()
+    if bool(grayworld_white_balance):
+        out = _grayworld_white_balance(out)
+
+    lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    tile = max(2, int(clahe_tile_grid))
+    clahe = cv2.createCLAHE(
+        clipLimit=float(max(0.5, clahe_clip_limit)),
+        tileGridSize=(tile, tile),
+    )
+    l_eq = clahe.apply(l)
+    out = cv2.cvtColor(cv2.merge((l_eq, a, b)), cv2.COLOR_LAB2BGR)
+
+    k = _odd(max(1, int(denoise_kernel_size)))
+    out = cv2.medianBlur(out, k)
+    return out
+
+
 def _border_mask(h: int, w: int, frac: float = 0.08) -> np.ndarray:
     """Binary mask selecting only outer border pixels."""
     border = max(4, int(round(min(h, w) * frac)))
@@ -75,3 +106,13 @@ def _odd(value: int) -> int:
     """OpenCV kernels for blur/morph are expected to be odd-sized."""
     v = int(max(1, value))
     return v if v % 2 == 1 else v + 1
+
+
+def _grayworld_white_balance(img_bgr: np.ndarray) -> np.ndarray:
+    """Simple gray-world white balance to reduce global color cast."""
+    img_f = img_bgr.astype(np.float32)
+    channel_means = np.mean(img_f.reshape(-1, 3), axis=0)
+    gray_mean = float(np.mean(channel_means))
+    scales = gray_mean / np.maximum(channel_means, 1e-6)
+    balanced = img_f * scales
+    return np.clip(balanced, 0, 255).astype(np.uint8)

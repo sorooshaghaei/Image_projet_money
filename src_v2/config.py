@@ -61,6 +61,20 @@ class PolicySettings:
     coin_mm_min: float = 16.25
     coin_mm_max: float = 25.75
     coin_mm_rel_tol: float = 0.10
+    dynamic_hough_enabled: bool = True
+    dynamic_hough_count_threshold: int = 18
+    dynamic_hough_min_dist_scale: float = 1.05
+    dynamic_hough_param2_scale: float = 1.10
+    sparse_rescue_max_base_count: int = 5
+    sparse_rescue_min_dist_scale: float = 0.72
+    sparse_rescue_param2_scale: float = 0.68
+    sparse_rescue_dp_scale: float = 1.10
+    sparse_rescue_sat_median_max: float = 145.0
+    sparse_rescue_sat_p75_max: float = 130.0
+    sparse_rescue_min_mask_coverage: float = 0.35
+    color_scene_sat_low: float = 70.0
+    color_scene_sat_high: float = 150.0
+    color_scene_sat_p75_high: float = 200.0
     # Classical value calibration (fitted once on development dataset):
     # calibrated = alpha * raw_value + beta * coin_count + bias
     value_calibration_enabled: bool = True
