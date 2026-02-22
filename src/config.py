@@ -59,10 +59,14 @@ class PipelineConfig:
     center_radius: int = 2
     center_thickness: int = 3
 
+    analysis_border_ratio: float = 0.24
+    analysis_sat_delta_threshold: float | None = None
+    analysis_bimetal_mode: str = "mean-color"
+    analysis_material_mode: str = "lab"
+
     def get_preset(self, preset_name: str | None = None) -> HoughPreset:
         key = preset_name or self.active_preset
         if key not in HOUGH_PRESETS:
             available = ", ".join(sorted(HOUGH_PRESETS))
             raise ValueError(f"Unknown preset '{key}'. Available presets: {available}")
         return HOUGH_PRESETS[key]
-

@@ -14,6 +14,7 @@ class GroundTruthEntry:
     filename: str
     group: str
     coin_count: int
+    value_cents: int | None = None
 
 
 class GroundTruthRepository:
@@ -26,6 +27,7 @@ class GroundTruthRepository:
                 filename=entry.filename,
                 group=normalize_group_name(entry.group),
                 coin_count=int(entry.coin_count),
+                value_cents=None if entry.value_cents is None else int(entry.value_cents),
             )
 
     def find(self, filename: str, group: str) -> GroundTruthEntry | None:
@@ -45,6 +47,7 @@ class GroundTruthRepository:
             filename = parts[0]
             pieces_text = parts[1]
             group = parts[-1]
+            value_token = parts[2] if len(parts) >= 4 else None
             if not pieces_text.isdigit():
                 continue
             entries.append(
@@ -52,9 +55,25 @@ class GroundTruthRepository:
                     filename=filename,
                     group=group,
                     coin_count=int(pieces_text),
+                    value_cents=_parse_value_cents(value_token),
                 )
             )
         return entries
+
+
+def _parse_value_cents(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    cleaned = raw.strip().lower().replace(",", ".")
+    if not cleaned or cleaned in {"nan", "na", "n/a", "-"}:
+        return None
+    try:
+        value_eur = float(cleaned)
+    except ValueError:
+        return None
+    if not (value_eur >= 0.0):
+        return None
+    return int(round(value_eur * 100.0))
 
 
 RAW_ANNOTATIONS = """
@@ -166,4 +185,3 @@ IMG_1145.png 5 3,86 gp8
 14.jpeg 4 2,45 gp2
 15.jpeg 5 3,9 gp2
 """
-

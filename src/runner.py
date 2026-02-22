@@ -8,9 +8,10 @@ import numpy as np
 
 from .config import HOUGH_PRESETS, PipelineConfig
 from .dataset import ImageDataset
-from .evaluation import Evaluator
+from .evaluation import Evaluation
 from .ground_truth import GroundTruthRepository, normalize_group_name
 from .processor_circles import CirclePipelineProcessor, PipelineResult
+from .value_estimator import ValueEstimator
 
 
 class PipelineViewer:
@@ -25,6 +26,15 @@ class PipelineViewer:
     def show(self) -> None:
         if not self._results:
             print("[WARN] No pipeline results to display.")
+            return
+        backend = str(plt.get_backend()).lower()
+        non_interactive_tokens = ("agg", "inline", "pdf", "svg", "ps", "template")
+        if any(token in backend for token in non_interactive_tokens):
+            print(
+                f"[WARN] Matplotlib backend '{plt.get_backend()}' is non-interactive; "
+                "viewer window cannot open."
+            )
+            print("[WARN] Use a GUI backend (e.g. `MPLBACKEND=tkagg`) or run with `--save-dir outputs/pipeline --no-view`.")
             return
 
         self._fig, axes = plt.subplots(
@@ -50,10 +60,14 @@ class PipelineViewer:
     def _render(self) -> None:
         result = self._results[self._idx]
         params = result.hough_params
+        total_cents = int(result.debug_info.get("total_cents", 0))
+        euros = total_cents // 100
+        cents = total_cents % 100
         self._fig.suptitle(
             f"[{self._idx + 1}/{len(self._results)}] {result.source_path} | "
             f"circles={result.circle_count} | "
             f"param1={params.get('param1')} minR={params.get('minRadius')} maxR={params.get('maxRadius')} | "
+            f"value={euros}EUR{cents:02d}c | "
             "next: right/d/space, prev: left/a, quit: q/esc",
             fontsize=11,
         )
@@ -93,6 +107,7 @@ class AppRunner:
         args = self._build_parser().parse_args()
         cols = max(1, args.cols)
         eval_groups = _parse_eval_groups(args.eval_groups)
+        print(f"[INFO] Matplotlib backend: {plt.get_backend()}")
         config = PipelineConfig()
         if args.dataset_dir is not None:
             config = replace(config, dataset_dir=Path(args.dataset_dir).expanduser().resolve())
@@ -110,7 +125,7 @@ class AppRunner:
 
         processor = CirclePipelineProcessor(config, preset_name=preset_name)
         ground_truth = GroundTruthRepository()
-        evaluator = Evaluator()
+        evaluator = Evaluation()
         results: list[PipelineResult] = []
 
         print(f"[INFO] Processing {len(images)} image(s) from: {config.dataset_dir}")
@@ -118,9 +133,13 @@ class AppRunner:
             print("[INFO] Evaluation groups: all")
         else:
             print(f"[INFO] Evaluation groups: {', '.join(sorted(eval_groups))}")
-        print("=" * 110)
-        print(f"{'FILE':<35} {'GROUP':<6} {'PRED':<6} {'TRUE':<6} {'DIFF':<6} {'STATUS':<10}")
-        print("=" * 110)
+        print("=" * 182)
+        print(
+            f"{'FILE':<35} {'GROUP':<6} "
+            f"{'C_PRED':<6} {'C_TRUE':<6} {'C_DIFF':<6} "
+            f"{'V_PRED':<14} {'V_TRUE':<14} {'V_DIFF':<12} {'STATUS':<10}"
+        )
+        print("=" * 182)
         for index, item in enumerate(images, start=1):
             try:
                 result = processor.process_path(item.path)
@@ -132,7 +151,11 @@ class AppRunner:
             group_name = _group_from_relative_path(item.relative_path)
             if eval_groups is not None and group_name not in eval_groups:
                 evaluator.add_filtered_group()
-                print(f"{str(item.relative_path):<35} {group_name:<6} {'-':<6} {'-':<6} {'-':<6} {'SKIP_GROUP':<10}")
+                print(
+                    f"{str(item.relative_path):<35} {group_name:<6} "
+                    f"{'-':<6} {'-':<6} {'-':<6} "
+                    f"{'-':<14} {'-':<14} {'-':<12} {'SKIP_GROUP':<10}"
+                )
                 if args.save_dir:
                     out_dir = Path(args.save_dir)
                     out_subdir = out_dir / item.relative_path.parent
@@ -144,19 +167,35 @@ class AppRunner:
             gt_entry = ground_truth.find(item.relative_path.name, group_name)
             if gt_entry is None:
                 evaluator.add_missing_ground_truth()
-                print(f"{str(item.relative_path):<35} {group_name:<6} {'-':<6} {'-':<6} {'-':<6} {'SKIP_NO_GT':<10}")
+                print(
+                    f"{str(item.relative_path):<35} {group_name:<6} "
+                    f"{'-':<6} {'-':<6} {'-':<6} "
+                    f"{'-':<14} {'-':<14} {'-':<12} {'SKIP_NO_GT':<10}"
+                )
+                self._print_value_summary_line(result)
             else:
+                predicted_value_cents = int(result.debug_info.get("total_cents", 0))
                 eval_item = evaluator.add_match(
                     relative_path=item.relative_path,
                     group=group_name,
                     predicted=result.circle_count,
                     ground_truth=gt_entry,
+                    predicted_value_cents=predicted_value_cents,
                 )
                 status = "OK" if eval_item.is_correct else "ERR"
+                pred_value_txt = _format_total_cents(int(eval_item.predicted_value_cents))
+                if eval_item.expected_value_cents is None:
+                    true_value_txt = "n/a"
+                    value_diff_txt = "n/a"
+                else:
+                    true_value_txt = _format_total_cents(int(eval_item.expected_value_cents))
+                    value_diff_txt = _format_signed_cents(int(eval_item.value_diff_cents or 0))
                 print(
                     f"{str(item.relative_path):<35} {group_name:<6} "
-                    f"{eval_item.predicted:<6} {eval_item.expected:<6} {eval_item.diff:<6} {status:<10}"
+                    f"{eval_item.predicted:<6} {eval_item.expected:<6} {eval_item.diff:<6} "
+                    f"{pred_value_txt:<14} {true_value_txt:<14} {value_diff_txt:<12} {status:<10}"
                 )
+                self._print_value_summary_line(result)
 
             if args.save_dir:
                 out_dir = Path(args.save_dir)
@@ -165,29 +204,54 @@ class AppRunner:
                 out_file = out_subdir / f"{item.relative_path.stem}_pipeline.png"
                 save_pipeline_figure(result, out_file, cols=cols)
 
-        print("=" * 110)
+        print("=" * 182)
         summary = evaluator.summary()
         by_group = evaluator.summary_by_group()
         print(f"[INFO] Completed detections: {len(results)}/{len(images)}")
         print(f"[INFO] Evaluated (found in GT): {int(summary['evaluated'])}")
         print(f"[INFO] Skipped (filtered group): {evaluator.skipped_filtered_group}")
         print(f"[INFO] Skipped (missing GT): {evaluator.skipped_missing_ground_truth}")
+        print("[INFO] Coin Metrics:")
+        print(
+            f"  accuracy={float(summary['coin_accuracy']):.2f}% | "
+            f"mae={float(summary['coin_mae']):.2f} coins/image | "
+            f"correct={int(summary['coin_correct'])}/{int(summary['evaluated'])}"
+        )
+        print("[INFO] Value Metrics:")
+        print(
+            f"  accuracy={float(summary['value_accuracy']):.2f}% | "
+            f"mae={float(summary['value_mae_eur']):.2f} EUR/image "
+            f"({float(summary['value_mae_cents']):.1f} cents) | "
+            f"correct={int(summary['value_correct'])}/{int(summary['value_evaluated'])}"
+        )
+        print("[INFO] Combined Score:")
+        print(
+            f"  coin_score={float(summary['coin_score']):.2f} | "
+            f"value_score={_fmt_optional_score(summary.get('value_score'))} | "
+            f"general_score={float(summary['general_score']):.2f}"
+        )
         if by_group:
-            print("-" * 70)
-            print(f"{'GROUP':<8} {'EVAL':<8} {'OK':<8} {'ACCURACY':<12} {'MAE':<10}")
-            print("-" * 70)
+            print("-" * 120)
+            print(
+                f"{'GROUP':<8} {'EVAL':<6} "
+                f"{'COIN_ACC':<10} {'COIN_MAE':<10} "
+                f"{'VAL_ACC':<10} {'VAL_MAE_EUR':<12} {'GENERAL':<10}"
+            )
+            print("-" * 120)
             for group in sorted(by_group):
                 row = by_group[group]
-                acc_text = f"{float(row['accuracy']):.2f}%"
                 print(
-                    f"{group:<8} {int(row['evaluated']):<8} {int(row['correct']):<8} "
-                    f"{acc_text:<12} {float(row['mae']):<10.2f}"
+                    f"{group:<8} {int(row['evaluated']):<6} "
+                    f"{float(row['coin_accuracy']):>8.2f}%  {float(row['coin_mae']):>8.2f}   "
+                    f"{float(row['value_accuracy']):>8.2f}%  {float(row['value_mae_eur']):>10.2f}   "
+                    f"{float(row['general_score']):>8.2f}"
                 )
-            print("-" * 70)
+            print("-" * 120)
         if int(summary["evaluated"]) > 0:
-            print(f"[INFO] Perfect matches: {int(summary['correct'])}")
-            print(f"[INFO] Accuracy: {float(summary['accuracy']):.2f}%")
-            print(f"[INFO] MAE: {float(summary['mae']):.2f} coins/image")
+            print(f"[INFO] Perfect coin matches: {int(summary['coin_correct'])}")
+            print(f"[INFO] Coin accuracy: {float(summary['coin_accuracy']):.2f}%")
+            print(f"[INFO] Coin MAE: {float(summary['coin_mae']):.2f} coins/image")
+            print(f"[INFO] FINAL GENERAL SCORE: {float(summary['general_score']):.2f}")
         else:
             print("[WARN] No evaluation rows matched the ground truth.")
         if args.no_view:
@@ -196,6 +260,21 @@ class AppRunner:
             print("[WARN] No successful results to display.")
             return
         PipelineViewer(results, cols=cols).show()
+
+    @staticmethod
+    def _print_value_summary_line(result: PipelineResult) -> None:
+        total_cents = int(result.debug_info.get("total_cents", 0))
+        counts = result.debug_info.get("value_counts", {})
+        if not isinstance(counts, dict):
+            counts = {}
+
+        non_zero = [
+            f"{ValueEstimator.DENOM_TEXT[d]}:{int(counts.get(d, 0))}"
+            for d in ValueEstimator.DENOM_PRINT_ORDER
+            if int(counts.get(d, 0)) > 0
+        ]
+        detail = ", ".join(non_zero) if non_zero else "none"
+        print(f"{'':<35} {'':<6} {'':<6} {'':<6} {'':<6} {'VALUE':<10} {_format_total_cents(total_cents)} | {detail}")
 
     @staticmethod
     def _build_parser() -> argparse.ArgumentParser:
@@ -288,3 +367,22 @@ def _parse_eval_groups(raw_groups: list[str] | None) -> set[str] | None:
             if group:
                 groups.add(group)
     return groups if groups else None
+
+
+def _format_total_cents(total_cents: int) -> str:
+    euros = total_cents // 100
+    cents = total_cents % 100
+    return f"{euros} EUR {cents:02d} c"
+
+
+def _format_signed_cents(diff_cents: int) -> str:
+    sign = "+" if diff_cents >= 0 else "-"
+    euros_abs = abs(int(diff_cents)) // 100
+    cents_abs = abs(int(diff_cents)) % 100
+    return f"{sign}{euros_abs} EUR {cents_abs:02d} c"
+
+
+def _fmt_optional_score(value: float | int | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.2f}"
