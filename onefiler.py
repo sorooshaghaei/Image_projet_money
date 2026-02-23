@@ -84,6 +84,7 @@ class HoughPreset:
 HOUGH_PRESETS: dict[str, HoughPreset] = {
     "test1": HoughPreset(dp=1.15, min_dist=30, param2=55),
     "test2": HoughPreset(dp=1.15, min_dist=20, param2=57),
+    "test3": HoughPreset(dp=1.15, min_dist=20, param2=50),
 }
 
 
@@ -111,6 +112,31 @@ class PipelineConfig:
     clahe_clip_limit: float = 2.0
     clahe_tile_grid_size: tuple[int, int] = (8, 8)
 
+    color_normalization_enabled: bool = False
+    color_balance_strength: float = 0.35
+    color_balance_max_shift_ab: float = 6.0
+    color_balance_max_shift_l: float = 4.0
+    color_saturation_target: float = 108.0
+    color_saturation_strength: float = 0.14
+
+    histogram_normalization_enabled: bool = False
+    histogram_clip_limit: float = 2.2
+    histogram_tile_grid_size: tuple[int, int] = (8, 8)
+    histogram_stretch_percentiles: tuple[float, float] = (1.0, 99.0)
+
+    # Euro color anchors in OpenCV LAB scale (L:[0..255], a/b:[0..255]).
+    # Source: U.S. Mint "Alternative Metals Study Final Report" (2012),
+    # Tables 2-15, 2-16 and 2-18 (CIE Lab measurements).
+    # Reference basis:
+    # - "copper-plated" coin material: CIE Lab ~ (78.3, 13.6, 17.1)
+    # - "manganese brass" coin material: CIE Lab ~ (82.3, 2.9, 14.6)
+    # - "cupronickel" coin material: CIE Lab ~ (76.3, 0.8, 6.7)
+    # Converted to OpenCV LAB:
+    # - L_cv = L* * 255/100, a_cv = a* + 128, b_cv = b* + 128
+    euro_reference_lab_bronze: tuple[float, float, float] = (200.0, 142.0, 145.0)
+    euro_reference_lab_gold: tuple[float, float, float] = (210.0, 131.0, 143.0)
+    euro_reference_lab_nickel: tuple[float, float, float] = (195.0, 129.0, 135.0)
+
     blur_mode: str = "gauss"  # or median
     gauss_ksize: int = 5
     gauss_sigma: float = 2.0
@@ -124,7 +150,7 @@ class PipelineConfig:
 
     max_radius: int = 100
     min_radius_sweep_start: int = 10
-    min_radius_sweep_end: int = 140
+    min_radius_sweep_end: int = max_radius - min_radius_sweep_start
     min_radius_sweep_step: int = 2
 
     circle_outline_color: tuple[int, int, int] = (0, 255, 0)
@@ -430,6 +456,12 @@ class EvaluationItem:
 
 
 class Evaluator:
+    # Value evaluation policy:
+    # - differences up to tolerance are treated as "acceptable" for accuracy
+    # - larger differences are scored progressively down to 0 at soft-cap
+    VALUE_TOLERANCE_CENTS = 100
+    VALUE_SOFT_CAP_CENTS = 400
+
     def __init__(self):
         self._items: list[EvaluationItem] = []
         self._skipped_missing_ground_truth = 0
@@ -474,6 +506,20 @@ class Evaluator:
         self._skipped_filtered_group += 1
 
     def _compute_metrics(self, items: list[EvaluationItem]) -> dict[str, float | int | None]:
+        value_tolerance_cents = int(self.VALUE_TOLERANCE_CENTS)
+        value_soft_cap_cents = int(max(self.VALUE_SOFT_CAP_CENTS, value_tolerance_cents + 1))
+
+        def _value_quality_score(abs_diff_cents: int) -> float:
+            # Full score inside tolerance, then linear decay to 0 at soft-cap.
+            diff = float(max(0, int(abs_diff_cents)))
+            tol = float(value_tolerance_cents)
+            cap = float(value_soft_cap_cents)
+            if diff <= tol:
+                return 100.0
+            if diff >= cap:
+                return 0.0
+            return float(100.0 * (1.0 - (diff - tol) / (cap - tol)))
+
         if not items:
             return {
                 "evaluated": 0,
@@ -484,9 +530,14 @@ class Evaluator:
                 "value_evaluated": 0,
                 "value_correct": 0,
                 "value_accuracy": 0.0,
+                "value_correct_exact": 0,
+                "value_accuracy_exact": 0.0,
                 "value_mae_cents": 0.0,
                 "value_mae_eur": 0.0,
                 "value_total_abs_error_cents": 0,
+                "value_tolerance_cents": value_tolerance_cents,
+                "value_soft_cap_cents": value_soft_cap_cents,
+                "value_error_score": 0.0,
                 "coin_score": 0.0,
                 "value_score": None,
                 "general_score": 0.0,
@@ -505,8 +556,14 @@ class Evaluator:
 
         value_items = [item for item in items if item.has_value_ground_truth]
         value_evaluated = len(value_items)
-        value_correct = sum(1 for item in value_items if item.value_is_correct)
+        value_correct_exact = sum(1 for item in value_items if item.value_is_correct)
+        value_correct = sum(
+            1
+            for item in value_items
+            if int(item.value_abs_diff_cents or 0) <= value_tolerance_cents
+        )
         value_total_abs_error_cents = sum(int(item.value_abs_diff_cents or 0) for item in value_items)
+        value_accuracy_exact = (value_correct_exact / value_evaluated) * 100.0 if value_evaluated > 0 else 0.0
         value_accuracy = (value_correct / value_evaluated) * 100.0 if value_evaluated > 0 else 0.0
         value_mae_cents = (value_total_abs_error_cents / value_evaluated) if value_evaluated > 0 else 0.0
         value_mae_eur = value_mae_cents / 100.0
@@ -515,10 +572,15 @@ class Evaluator:
         coin_score = 0.60 * coin_accuracy + 0.40 * coin_error_score
 
         if value_evaluated > 0:
-            value_error_score = 100.0 / (1.0 + value_mae_eur)
-            value_score = 0.60 * value_accuracy + 0.40 * value_error_score
+            quality_scores = [
+                _value_quality_score(int(item.value_abs_diff_cents or 0))
+                for item in value_items
+            ]
+            value_error_score = float(np.mean(quality_scores)) if quality_scores else 0.0
+            value_score = 0.55 * value_accuracy + 0.45 * value_error_score
             general_score = 0.50 * coin_score + 0.50 * value_score
         else:
+            value_error_score = 0.0
             value_score = None
             general_score = coin_score
 
@@ -531,9 +593,14 @@ class Evaluator:
             "value_evaluated": value_evaluated,
             "value_correct": value_correct,
             "value_accuracy": value_accuracy,
+            "value_correct_exact": value_correct_exact,
+            "value_accuracy_exact": value_accuracy_exact,
             "value_mae_cents": value_mae_cents,
             "value_mae_eur": value_mae_eur,
             "value_total_abs_error_cents": value_total_abs_error_cents,
+            "value_tolerance_cents": value_tolerance_cents,
+            "value_soft_cap_cents": value_soft_cap_cents,
+            "value_error_score": value_error_score,
             "coin_score": coin_score,
             "value_score": value_score,
             "general_score": general_score,
@@ -608,10 +675,16 @@ def letterbox_resize_to_canvas(image_bgr: np.ndarray, target_w: int, target_h: i
 class PreprocessingResult:
     image_bgr: np.ndarray
     image_rgb: np.ndarray
+    color_balanced_bgr: np.ndarray
+    color_balanced_rgb: np.ndarray
+    hist_norm_bgr: np.ndarray
+    hist_norm_rgb: np.ndarray
     clahe_bgr: np.ndarray
     clahe_rgb: np.ndarray
     gray: np.ndarray
     blurred: np.ndarray
+    color_norm_debug: dict[str, Any]
+    hist_norm_debug: dict[str, Any]
 
 
 class ImagePreprocessing:
@@ -620,6 +693,19 @@ class ImagePreprocessing:
         clahe_enabled: bool = False,
         clahe_clip_limit: float = 2.0,
         clahe_tile_grid_size: tuple[int, int] = (8, 8),
+        color_normalization_enabled: bool = False,
+        color_balance_strength: float = 0.35,
+        color_balance_max_shift_ab: float = 6.0,
+        color_balance_max_shift_l: float = 4.0,
+        color_saturation_target: float = 108.0,
+        color_saturation_strength: float = 0.14,
+        histogram_normalization_enabled: bool = False,
+        histogram_clip_limit: float = 2.2,
+        histogram_tile_grid_size: tuple[int, int] = (8, 8),
+        histogram_stretch_percentiles: tuple[float, float] = (1.0, 99.0),
+        euro_reference_lab_bronze: tuple[float, float, float] = (200.0, 142.0, 145.0),
+        euro_reference_lab_gold: tuple[float, float, float] = (210.0, 131.0, 143.0),
+        euro_reference_lab_nickel: tuple[float, float, float] = (195.0, 129.0, 135.0),
         blur_mode: str = "gauss",
         gauss_ksize: int = 5,
         gauss_sigma: float = 2.0,
@@ -627,6 +713,19 @@ class ImagePreprocessing:
         self._clahe_enabled = bool(clahe_enabled)
         self._clahe_clip_limit = float(clahe_clip_limit)
         self._clahe_tile_grid_size = clahe_tile_grid_size
+        self._color_normalization_enabled = bool(color_normalization_enabled)
+        self._color_balance_strength = float(color_balance_strength)
+        self._color_balance_max_shift_ab = float(color_balance_max_shift_ab)
+        self._color_balance_max_shift_l = float(color_balance_max_shift_l)
+        self._color_saturation_target = float(color_saturation_target)
+        self._color_saturation_strength = float(color_saturation_strength)
+        self._histogram_normalization_enabled = bool(histogram_normalization_enabled)
+        self._histogram_clip_limit = float(histogram_clip_limit)
+        self._histogram_tile_grid_size = histogram_tile_grid_size
+        self._histogram_stretch_percentiles = histogram_stretch_percentiles
+        self._euro_reference_lab_bronze = euro_reference_lab_bronze
+        self._euro_reference_lab_gold = euro_reference_lab_gold
+        self._euro_reference_lab_nickel = euro_reference_lab_nickel
         self._blur_mode = _normalize_blur_mode(blur_mode)
         self._gauss_ksize = int(gauss_ksize)
         self._gauss_sigma = float(gauss_sigma)
@@ -637,16 +736,46 @@ class ImagePreprocessing:
 
     def process(self, image_bgr: np.ndarray) -> PreprocessingResult:
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        if self._color_normalization_enabled:
+            color_balanced_bgr, color_norm_debug = normalize_color_to_euro_references(
+                image_bgr=image_bgr,
+                strength=self._color_balance_strength,
+                max_shift_ab=self._color_balance_max_shift_ab,
+                max_shift_l=self._color_balance_max_shift_l,
+                saturation_target=self._color_saturation_target,
+                saturation_strength=self._color_saturation_strength,
+                bronze_ref_lab=self._euro_reference_lab_bronze,
+                gold_ref_lab=self._euro_reference_lab_gold,
+                nickel_ref_lab=self._euro_reference_lab_nickel,
+            )
+        else:
+            color_balanced_bgr = image_bgr
+            color_norm_debug = {"enabled": False}
+        color_balanced_rgb = cv2.cvtColor(color_balanced_bgr, cv2.COLOR_BGR2RGB)
+
+        if self._histogram_normalization_enabled:
+            hist_norm_bgr, hist_norm_debug = normalize_luminance_histogram(
+                image_bgr=color_balanced_bgr,
+                clip_limit=self._histogram_clip_limit,
+                tile_grid_size=self._histogram_tile_grid_size,
+                stretch_percentiles=self._histogram_stretch_percentiles,
+            )
+        else:
+            hist_norm_bgr = color_balanced_bgr
+            hist_norm_debug = {"enabled": False}
+        hist_norm_rgb = cv2.cvtColor(hist_norm_bgr, cv2.COLOR_BGR2RGB)
+
         if self._clahe_enabled:
             clahe_bgr, clahe_rgb = apply_clahe_on_l_channel(
-                image_bgr,
+                hist_norm_bgr,
                 clip_limit=self._clahe_clip_limit,
                 tile_grid_size=self._clahe_tile_grid_size,
             )
         else:
-            clahe_bgr = image_bgr
-            clahe_rgb = image_rgb
-        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+            clahe_bgr = hist_norm_bgr
+            clahe_rgb = hist_norm_rgb
+
+        gray = cv2.cvtColor(clahe_bgr, cv2.COLOR_BGR2GRAY)
         ksize = _normalize_odd_ksize(self._gauss_ksize)
         if self._blur_mode == "gauss":
             blurred = cv2.GaussianBlur(gray, (ksize, ksize), self._gauss_sigma)
@@ -656,11 +785,190 @@ class ImagePreprocessing:
         return PreprocessingResult(
             image_bgr=image_bgr,
             image_rgb=image_rgb,
+            color_balanced_bgr=color_balanced_bgr,
+            color_balanced_rgb=color_balanced_rgb,
+            hist_norm_bgr=hist_norm_bgr,
+            hist_norm_rgb=hist_norm_rgb,
             clahe_bgr=clahe_bgr,
             clahe_rgb=clahe_rgb,
             gray=gray,
             blurred=blurred,
+            color_norm_debug=color_norm_debug,
+            hist_norm_debug=hist_norm_debug,
         )
+
+
+def _clamp_float(value: float, low: float, high: float) -> float:
+    return low if value < low else high if value > high else value
+
+
+def gray_world_white_balance(image_bgr: np.ndarray, gain_clip: tuple[float, float] = (0.72, 1.40)) -> np.ndarray:
+    image_f = image_bgr.astype(np.float32)
+    channel_means = np.mean(image_f.reshape(-1, 3), axis=0)
+    mean_gray = float(np.mean(channel_means))
+    gains = mean_gray / np.maximum(channel_means, 1e-6)
+    gains = np.clip(gains, gain_clip[0], gain_clip[1]).astype(np.float32)
+    balanced = np.clip(image_f * gains.reshape((1, 1, 3)), 0.0, 255.0).astype(np.uint8)
+    return balanced
+
+
+def _estimate_coin_like_masks(hsv_u8: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    h = hsv_u8[:, :, 0]
+    s = hsv_u8[:, :, 1]
+    v = hsv_u8[:, :, 2]
+
+    warm_mask = (
+        (h >= 7)
+        & (h <= 35)
+        & (s >= 26)
+        & (v >= 30)
+        & (v <= 245)
+    )
+    neutral_mask = (
+        (s <= 45)
+        & (v >= 35)
+        & (v <= 235)
+    )
+    return warm_mask, neutral_mask
+
+
+def normalize_color_to_euro_references(
+    image_bgr: np.ndarray,
+    strength: float = 0.35,
+    max_shift_ab: float = 6.0,
+    max_shift_l: float = 4.0,
+    saturation_target: float = 108.0,
+    saturation_strength: float = 0.14,
+    bronze_ref_lab: tuple[float, float, float] = (200.0, 142.0, 145.0),
+    gold_ref_lab: tuple[float, float, float] = (210.0, 131.0, 143.0),
+    nickel_ref_lab: tuple[float, float, float] = (195.0, 129.0, 135.0),
+) -> tuple[np.ndarray, dict[str, Any]]:
+    wb_bgr = gray_world_white_balance(image_bgr)
+    hsv = cv2.cvtColor(wb_bgr, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(wb_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    warm_mask, neutral_mask = _estimate_coin_like_masks(hsv)
+
+    target_warm_lab = (
+        0.50 * float(bronze_ref_lab[0]) + 0.50 * float(gold_ref_lab[0]),
+        0.46 * float(bronze_ref_lab[1]) + 0.54 * float(gold_ref_lab[1]),
+        0.44 * float(bronze_ref_lab[2]) + 0.56 * float(gold_ref_lab[2]),
+    )
+
+    shift_l = 0.0
+    shift_a = 0.0
+    shift_b = 0.0
+    warm_count = int(np.sum(warm_mask))
+    warm_mean_lab = None
+
+    if warm_count >= 300:
+        warm_pixels = lab[warm_mask]
+        warm_mean = np.median(warm_pixels, axis=0)
+        warm_mean_lab = [float(warm_mean[0]), float(warm_mean[1]), float(warm_mean[2])]
+        shift_l = _clamp_float(
+            (target_warm_lab[0] - warm_mean[0]) * 0.18 * strength,
+            -max_shift_l,
+            max_shift_l,
+        )
+        shift_a = _clamp_float(
+            (target_warm_lab[1] - warm_mean[1]) * 0.45 * strength,
+            -max_shift_ab,
+            max_shift_ab,
+        )
+        shift_b = _clamp_float(
+            (target_warm_lab[2] - warm_mean[2]) * 0.45 * strength,
+            -max_shift_ab,
+            max_shift_ab,
+        )
+
+    neutral_count = int(np.sum(neutral_mask))
+    neutral_a_shift = 0.0
+    neutral_b_shift = 0.0
+    if neutral_count >= 400:
+        neutral_pixels = lab[neutral_mask]
+        neutral_mean = np.median(neutral_pixels, axis=0)
+        neutral_a_shift = _clamp_float(
+            (float(nickel_ref_lab[1]) - float(neutral_mean[1])) * 0.20 * strength,
+            -3.0,
+            3.0,
+        )
+        neutral_b_shift = _clamp_float(
+            (float(nickel_ref_lab[2]) - float(neutral_mean[2])) * 0.20 * strength,
+            -3.0,
+            3.0,
+        )
+
+    lab[:, :, 0] = np.clip(lab[:, :, 0] + shift_l, 0.0, 255.0)
+    lab[:, :, 1] = np.clip(lab[:, :, 1] + shift_a + neutral_a_shift, 0.0, 255.0)
+    lab[:, :, 2] = np.clip(lab[:, :, 2] + shift_b + neutral_b_shift, 0.0, 255.0)
+
+    balanced_bgr = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+    balanced_hsv = cv2.cvtColor(balanced_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+
+    sat_values = balanced_hsv[:, :, 1][warm_mask]
+    if sat_values.size < 120:
+        sat_values = balanced_hsv[:, :, 1].reshape(-1)
+    sat_median = float(np.median(sat_values)) if sat_values.size > 0 else 0.0
+    sat_scale = 1.0
+    if sat_median > 1.0:
+        sat_scale = (float(saturation_target) / sat_median) ** float(saturation_strength)
+        sat_scale = _clamp_float(sat_scale, 0.93, 1.08)
+        balanced_hsv[:, :, 1] = np.clip(balanced_hsv[:, :, 1] * sat_scale, 0.0, 255.0)
+
+    balanced_bgr = cv2.cvtColor(balanced_hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    debug_info: dict[str, Any] = {
+        "enabled": True,
+        "warm_pixel_count": warm_count,
+        "neutral_pixel_count": neutral_count,
+        "warm_mean_lab": warm_mean_lab,
+        "target_warm_lab": [float(target_warm_lab[0]), float(target_warm_lab[1]), float(target_warm_lab[2])],
+        "shift_l": float(shift_l),
+        "shift_a": float(shift_a + neutral_a_shift),
+        "shift_b": float(shift_b + neutral_b_shift),
+        "reference_lab": {
+            "bronze": [float(bronze_ref_lab[0]), float(bronze_ref_lab[1]), float(bronze_ref_lab[2])],
+            "gold": [float(gold_ref_lab[0]), float(gold_ref_lab[1]), float(gold_ref_lab[2])],
+            "nickel": [float(nickel_ref_lab[0]), float(nickel_ref_lab[1]), float(nickel_ref_lab[2])],
+        },
+        "sat_median_before": float(sat_median),
+        "sat_scale": float(sat_scale),
+    }
+    return balanced_bgr, debug_info
+
+
+def _percentile_stretch_u8(channel_u8: np.ndarray, p_low: float, p_high: float) -> tuple[np.ndarray, float, float]:
+    low = float(np.percentile(channel_u8, p_low))
+    high = float(np.percentile(channel_u8, p_high))
+    if high <= low + 1.0:
+        return channel_u8.copy(), low, high
+    out = ((channel_u8.astype(np.float32) - low) * (255.0 / (high - low)))
+    out = np.clip(out, 0.0, 255.0).astype(np.uint8)
+    return out, low, high
+
+
+def normalize_luminance_histogram(
+    image_bgr: np.ndarray,
+    clip_limit: float = 2.2,
+    tile_grid_size: tuple[int, int] = (8, 8),
+    stretch_percentiles: tuple[float, float] = (1.0, 99.0),
+) -> tuple[np.ndarray, dict[str, Any]]:
+    lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+
+    clahe = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=tile_grid_size)
+    l_clahe = clahe.apply(l_channel)
+
+    p_low, p_high = stretch_percentiles
+    l_norm, lo, hi = _percentile_stretch_u8(l_clahe, p_low=float(p_low), p_high=float(p_high))
+    out_bgr = cv2.cvtColor(cv2.merge((l_norm, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
+    debug_info: dict[str, Any] = {
+        "enabled": True,
+        "clip_limit": float(clip_limit),
+        "tile_grid_size": [int(tile_grid_size[0]), int(tile_grid_size[1])],
+        "stretch_percentiles": [float(p_low), float(p_high)],
+        "l_percentile_low": float(lo),
+        "l_percentile_high": float(hi),
+    }
+    return out_bgr, debug_info
 
 
 def apply_clahe_on_l_channel(
@@ -2553,6 +2861,19 @@ class CirclePipelineProcessor:
             clahe_enabled=self._clahe_enabled,
             clahe_clip_limit=config.clahe_clip_limit,
             clahe_tile_grid_size=config.clahe_tile_grid_size,
+            color_normalization_enabled=config.color_normalization_enabled,
+            color_balance_strength=config.color_balance_strength,
+            color_balance_max_shift_ab=config.color_balance_max_shift_ab,
+            color_balance_max_shift_l=config.color_balance_max_shift_l,
+            color_saturation_target=config.color_saturation_target,
+            color_saturation_strength=config.color_saturation_strength,
+            histogram_normalization_enabled=config.histogram_normalization_enabled,
+            histogram_clip_limit=config.histogram_clip_limit,
+            histogram_tile_grid_size=config.histogram_tile_grid_size,
+            histogram_stretch_percentiles=config.histogram_stretch_percentiles,
+            euro_reference_lab_bronze=config.euro_reference_lab_bronze,
+            euro_reference_lab_gold=config.euro_reference_lab_gold,
+            euro_reference_lab_nickel=config.euro_reference_lab_nickel,
             blur_mode=config.blur_mode,
             gauss_ksize=config.gauss_ksize,
             gauss_sigma=config.gauss_sigma,
@@ -2592,13 +2913,25 @@ class CirclePipelineProcessor:
         )
 
         prep = self._preprocessing.process(image_bgr)
-        detection = self._detector.detect(prep.gray, prep.blurred, prep.image_rgb)
-        valuation = self._value_estimator.estimate(image_bgr, detection.circles)
+        detection_gray = cv2.cvtColor(prep.image_bgr, cv2.COLOR_BGR2GRAY)
+        ksize = _normalize_odd_ksize(self._cfg.gauss_ksize)
+        if self._cfg.blur_mode == "gauss":
+            detection_blurred = cv2.GaussianBlur(detection_gray, (ksize, ksize), self._cfg.gauss_sigma)
+        else:
+            detection_blurred = detection_gray if ksize <= 1 else cv2.medianBlur(detection_gray, ksize)
+
+        detection = self._detector.detect(detection_gray, detection_blurred, prep.image_rgb)
+        valuation_input_bgr = prep.hist_norm_bgr if self._cfg.histogram_normalization_enabled else prep.color_balanced_bgr
+        valuation = self._value_estimator.estimate(valuation_input_bgr, detection.circles)
 
         value_counts = valuation.counts if len(valuation.counts) > 0 else {d: 0 for d in ValueEstimator.DENOM_PRINT_ORDER}
         steps = [
             PipelineStep("Original (Letterbox 640x480)", prep.image_rgb, "rgb"),
         ]
+        if self._cfg.color_normalization_enabled:
+            steps.append(PipelineStep("Color Normalized (Euro Etalon)", prep.color_balanced_rgb, "rgb"))
+        if self._cfg.histogram_normalization_enabled:
+            steps.append(PipelineStep("Histogram Normalized (L-channel)", prep.hist_norm_rgb, "rgb"))
         if self._clahe_enabled:
             steps.append(PipelineStep("CLAHE (L channel)", prep.clahe_rgb, "rgb"))
         steps.extend(
@@ -2616,6 +2949,13 @@ class CirclePipelineProcessor:
             "sweep_results": detection.sweep_results,
             "clahe_enabled": self._clahe_enabled,
             "blur_mode": self._cfg.blur_mode,
+            "color_normalization_enabled": self._cfg.color_normalization_enabled,
+            "histogram_normalization_enabled": self._cfg.histogram_normalization_enabled,
+            "color_norm_debug": prep.color_norm_debug,
+            "hist_norm_debug": prep.hist_norm_debug,
+            "valuation_input_stage": (
+                "hist_norm_bgr" if self._cfg.histogram_normalization_enabled else "color_balanced_bgr"
+            ),
             "split_stats": valuation.split_stats,
             "value_predictions": valuation.predictions,
             "value_scale_info": valuation.scale_info,
@@ -3047,6 +3387,25 @@ class OneFileViewer:
             f"minR={hough.get('minRadius', 'n/a')}  maxR={hough.get('maxRadius', 'n/a')}"
         )
 
+        color_norm_debug = info.get("color_norm_debug", {})
+        hist_norm_debug = info.get("hist_norm_debug", {})
+        if isinstance(color_norm_debug, dict) and bool(color_norm_debug.get("enabled", False)):
+            color_norm_line = (
+                f"sat_scale={float(color_norm_debug.get('sat_scale', 1.0)):.3f}  "
+                f"shift_a={float(color_norm_debug.get('shift_a', 0.0)):+.2f}  "
+                f"shift_b={float(color_norm_debug.get('shift_b', 0.0)):+.2f}"
+            )
+        else:
+            color_norm_line = "disabled"
+
+        if isinstance(hist_norm_debug, dict) and bool(hist_norm_debug.get("enabled", False)):
+            p = hist_norm_debug.get("stretch_percentiles", [1.0, 99.0])
+            lo = float(hist_norm_debug.get("l_percentile_low", 0.0))
+            hi = float(hist_norm_debug.get("l_percentile_high", 255.0))
+            hist_norm_line = f"p=[{float(p[0]):.1f},{float(p[1]):.1f}]  L=[{lo:.1f},{hi:.1f}]"
+        else:
+            hist_norm_line = "disabled"
+
         text = (
             "DEBUG PANEL\n"
             "================================\n"
@@ -3069,6 +3428,10 @@ class OneFileViewer:
             "\n"
             "hough params\n"
             f"{hough_line}\n"
+            "\n"
+            "normalization\n"
+            f"  color_norm : {color_norm_line}\n"
+            f"  hist_norm  : {hist_norm_line}\n"
             "\n"
             "keys\n"
             "  left/right : previous/next image\n"
@@ -3093,6 +3456,10 @@ class OneFileRunner:
         config = PipelineConfig()
         if args.dataset_dir is not None:
             config = replace(config, dataset_dir=Path(args.dataset_dir).expanduser().resolve())
+        if args.color_norm is not None:
+            config = replace(config, color_normalization_enabled=bool(args.color_norm))
+        if args.hist_norm is not None:
+            config = replace(config, histogram_normalization_enabled=bool(args.hist_norm))
 
         preset_name = args.preset or config.active_preset
         if preset_name not in HOUGH_PRESETS:
@@ -3115,6 +3482,10 @@ class OneFileRunner:
             console.print("[cyan][INFO] Evaluation groups:[/cyan] all")
         else:
             console.print(f"[cyan][INFO] Evaluation groups:[/cyan] {', '.join(sorted(eval_groups))}")
+        console.print(
+            f"[cyan][INFO] Color norm:[/cyan] {config.color_normalization_enabled} | "
+            f"[cyan][INFO] Hist norm:[/cyan] {config.histogram_normalization_enabled}"
+        )
         print()
 
         # Set up the main results table
@@ -3267,6 +3638,8 @@ class OneFileRunner:
 
         summary = evaluator.summary()
         by_group = evaluator.summary_by_group()
+        value_tolerance_cents = int(summary.get("value_tolerance_cents", 100))
+        value_tolerance_label = _format_total_cents(value_tolerance_cents)
         
         # Print Summary Metrics
         console.print("\n[bold cyan]--- OVERALL METRICS ---[/bold cyan]")
@@ -3284,10 +3657,12 @@ class OneFileRunner:
         
         console.print("[bold]Value Metrics:[/bold]")
         console.print(
-            f"  accuracy=[green]{float(summary['value_accuracy']):.2f}%[/green] | "
+            f"  accuracy(<= {value_tolerance_label})=[green]{float(summary['value_accuracy']):.2f}%[/green] | "
+            f"exact={float(summary.get('value_accuracy_exact', 0.0)):.2f}% | "
             f"mae={float(summary['value_mae_eur']):.2f} EUR/image "
             f"({float(summary['value_mae_cents']):.1f} cents) | "
-            f"correct={int(summary['value_correct'])}/{int(summary['value_evaluated'])}"
+            f"correct={int(summary['value_correct'])}/{int(summary['value_evaluated'])} | "
+            f"quality={float(summary.get('value_error_score', 0.0)):.2f}"
         )
         
         console.print("[bold]Combined Score:[/bold]")
@@ -3304,7 +3679,7 @@ class OneFileRunner:
             group_table.add_column("EVAL", justify="right")
             group_table.add_column("COIN ACC", justify="right")
             group_table.add_column("COIN MAE", justify="right")
-            group_table.add_column("VAL ACC", justify="right")
+            group_table.add_column(f"VAL ACC <= {value_tolerance_label}", justify="right")
             group_table.add_column("VAL MAE (EUR)", justify="right")
             group_table.add_column("GENERAL", justify="right", style="bold magenta")
 
@@ -3406,6 +3781,32 @@ class OneFileRunner:
             nargs="*",
             default=None,
             help="Evaluate only these groups (e.g. --eval-groups gp1 gp2 or --eval-groups gp1,gp2).",
+        )
+        parser.add_argument(
+            "--color-norm",
+            dest="color_norm",
+            action="store_true",
+            default=None,
+            help="Enable euro-reference color normalization before value estimation.",
+        )
+        parser.add_argument(
+            "--no-color-norm",
+            dest="color_norm",
+            action="store_false",
+            help="Disable euro-reference color normalization.",
+        )
+        parser.add_argument(
+            "--hist-norm",
+            dest="hist_norm",
+            action="store_true",
+            default=None,
+            help="Enable luminance histogram normalization (CLAHE + percentile stretch).",
+        )
+        parser.add_argument(
+            "--no-hist-norm",
+            dest="hist_norm",
+            action="store_false",
+            help="Disable luminance histogram normalization.",
         )
         parser.add_argument(
             "--debug-export-dir",
