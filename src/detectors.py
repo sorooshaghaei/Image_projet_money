@@ -422,6 +422,40 @@ def label_bimetal_euro_from_saturation(inner_s: int, border_s: int) -> str:
         return "2-euro-like"
     return "bi-metal-euro-uncertain"
 
+
+def fallback_material_from_inner_hsv(h: int, s: int, v: int) -> str:
+    material = label_material_from_inner_hsv(h, s, v)
+    if material != "borderline":
+        return material
+
+    bronze_score = bronze_score_from_inner_hsv(h, s, v)
+    gold_score = gold_score_from_inner_hsv(h, s, v)
+    if max(bronze_score, gold_score) >= 0.30 and abs(bronze_score - gold_score) >= 0.02:
+        return "bronze" if bronze_score > gold_score else "gold"
+
+    # Keep a deterministic fallback for very low-confidence borderline colors.
+    return "bronze" if h <= 17 else "gold"
+
+
+def material_family_from_inner_hsv(inner_hsv: tuple[int, int, int] | list[int]) -> str:
+    if not isinstance(inner_hsv, (tuple, list)) or len(inner_hsv) < 3:
+        return "unknown"
+    h = int(inner_hsv[0])
+    s = int(inner_hsv[1])
+    v = int(inner_hsv[2])
+
+    bronze_score = bronze_score_from_inner_hsv(h, s, v)
+    gold_score = gold_score_from_inner_hsv(h, s, v)
+    if max(bronze_score, gold_score) >= 0.30 and abs(bronze_score - gold_score) >= 0.02:
+        return "bronze" if bronze_score > gold_score else "gold"
+
+    if s >= 45:
+        if h <= 15:
+            return "bronze"
+        if h >= 16:
+            return "gold"
+    return "unknown"
+
 def coin_kmeans_radial_structure(hsv_pixels: np.ndarray, radial_norm: np.ndarray) -> dict[str, float | bool]:
     n = int(hsv_pixels.shape[0])
     if n < 120:
@@ -904,8 +938,50 @@ def draw_and_analyze_circle_inner_border_colors(
         else:
             detector_type = "uncertain"
 
+        inner_h = int(inner_hsv[0])
+        inner_s = int(inner_hsv[1])
+        inner_v = int(inner_hsv[2])
+        border_h = int(border_hsv[0])
+        border_s = int(border_hsv[1])
+        kmeans_score = float(row["kmeans_radial_score"])
+        step_score = float(row["step_score"])
+        sat_mean = 0.5 * (float(inner_s) + float(border_s))
+
+        promote_uncertain_to_bimetal = bool(
+            (detector_type == "uncertain")
+            and (float(r) >= 34.0)
+            and (sat_mean < 60.0)
+            and (val_delta >= 8.0)
+            and (color_delta >= 22.0)
+            and ((kmeans_score >= 0.62) or (step_score >= 0.55))
+        )
+        if promote_uncertain_to_bimetal:
+            detector_type = "bi-metal-like"
+
+        false_bimetal_copper = bool(
+            (detector_type == "bi-metal-like")
+            and (inner_h <= 18)
+            and (border_h <= 18)
+            and (inner_s >= 140)
+            and (border_s >= 95)
+            and (kmeans_score < 0.85)
+        )
+        false_bimetal_warm_uniform = bool(
+            (detector_type == "bi-metal-like")
+            and (inner_h >= 19)
+            and (border_h >= 19)
+            and (hue_delta <= 2.0)
+            and (min(inner_s, border_s) >= 100)
+            and (kmeans_score < 0.85)
+            and (sat_delta < 30.0)
+            and (color_delta < 30.0)
+        )
+        if false_bimetal_copper or false_bimetal_warm_uniform:
+            detector_type = "one-color-like"
+            bronze_veto_applied = True
+
         if detector_type == "bi-metal-like":
-            bimetal_euro_label = label_bimetal_euro_from_saturation(int(inner_hsv[1]), int(border_hsv[1]))
+            bimetal_euro_label = label_bimetal_euro_from_saturation(inner_s, border_s)
             final_label = bimetal_euro_label
             bronze_score = 0.0
             bronze_score_hsv = 0.0
@@ -920,9 +996,6 @@ def draw_and_analyze_circle_inner_border_colors(
             material_label = "n/a"
         else:
             bimetal_euro_label = "n/a"
-            inner_h = int(inner_hsv[0])
-            inner_s = int(inner_hsv[1])
-            inner_v = int(inner_hsv[2])
 
             bronze_score_hsv = bronze_score_from_inner_hsv(inner_h, inner_s, inner_v)
             gold_score_hsv = gold_score_from_inner_hsv(inner_h, inner_s, inner_v)
@@ -932,9 +1005,9 @@ def draw_and_analyze_circle_inner_border_colors(
             gold_score_hybrid = gold_score_hsv
             material_label_hsv = label_material_from_inner_hsv(inner_h, inner_s, inner_v)
             material_label_lab = material_label_hsv
-            material_label_hybrid = material_label_hsv
+            material_label_hybrid = fallback_material_from_inner_hsv(inner_h, inner_s, inner_v)
             bronze_score = bronze_score_hsv
-            material_label = material_label_hsv
+            material_label = material_label_hybrid
 
             if detector_type == "uncertain":
                 final_label = "uncertain"
@@ -1113,14 +1186,9 @@ class ValueEstimator:
             return material
 
         inner_hsv = row.get("inner_hsv")
-        if isinstance(inner_hsv, (tuple, list)) and len(inner_hsv) >= 2:
-            h = int(inner_hsv[0])
-            s = int(inner_hsv[1])
-            if s >= 45:
-                if h <= 15:
-                    return "bronze"
-                if h >= 16:
-                    return "gold"
+        material_hint = material_family_from_inner_hsv(inner_hsv) if isinstance(inner_hsv, (tuple, list)) else "unknown"
+        if material_hint in ("bronze", "gold"):
+            return material_hint
 
         return "unknown"
 
