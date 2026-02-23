@@ -91,7 +91,7 @@ python main.py
 
 What it does:
 * Iterates over all images under `data/images/`
-* Runs the processing pipeline (letterbox -> CLAHE -> grayscale -> blur -> Hough circles)
+* Runs the processing pipeline (letterbox -> optional CLAHE -> grayscale -> configurable blur [gauss|median] -> Hough circles)
 * Compares predicted coin count to ground truth annotations
 * Opens an interactive pipeline viewer
 

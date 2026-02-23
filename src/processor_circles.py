@@ -31,11 +31,14 @@ class CirclePipelineProcessor:
     def __init__(self, config: PipelineConfig, preset_name: str | None = None):
         self._cfg = config
         self._preset_name = preset_name or config.active_preset
+        self._clahe_enabled = bool(config.clahe_enabled)
         preset = config.get_preset(self._preset_name)
 
         self._preprocessing = ImagePreprocessing(
+            clahe_enabled=self._clahe_enabled,
             clahe_clip_limit=config.clahe_clip_limit,
             clahe_tile_grid_size=config.clahe_tile_grid_size,
+            blur_mode=config.blur_mode,
             gauss_ksize=config.gauss_ksize,
             gauss_sigma=config.gauss_sigma,
         )
@@ -78,30 +81,40 @@ class CirclePipelineProcessor:
         valuation = self._value_estimator.estimate(image_bgr, detection.circles)
 
         value_counts = valuation.counts if len(valuation.counts) > 0 else {d: 0 for d in ValueEstimator.DENOM_PRINT_ORDER}
-
-        return PipelineResult(
-            source_path=source_path,
-            steps=[
-                PipelineStep("Original (Letterbox 640x480)", prep.image_rgb, "rgb"),
-                PipelineStep("CLAHE (L channel)", prep.clahe_rgb, "rgb"),
+        steps = [
+            PipelineStep("Original (Letterbox 640x480)", prep.image_rgb, "rgb"),
+        ]
+        if self._clahe_enabled:
+            steps.append(PipelineStep("CLAHE (L channel)", prep.clahe_rgb, "rgb"))
+        steps.extend(
+            [
                 PipelineStep("Grayscale", prep.gray, "gray"),
-                PipelineStep("Gaussian Blur", prep.blurred, "gray"),
+                PipelineStep(self._preprocessing.blur_step_name, prep.blurred, "gray"),
                 PipelineStep("Hough Circles", detection.circles_overlay, "rgb"),
                 PipelineStep("Inner/Border Mean Color Analysis", valuation.split_rgb, "rgb"),
                 PipelineStep("Coin Value Estimation", valuation.value_labeled_rgb, "rgb"),
-            ],
+            ]
+        )
+        debug_info = {
+            "preset": self._preset_name,
+            "plateau_debug": detection.sweep_debug,
+            "sweep_results": detection.sweep_results,
+            "clahe_enabled": self._clahe_enabled,
+            "blur_mode": self._cfg.blur_mode,
+            "split_stats": valuation.split_stats,
+            "value_predictions": valuation.predictions,
+            "value_scale_info": valuation.scale_info,
+            "family_models": valuation.family_models,
+            "value_counts": value_counts,
+            "total_cents": int(valuation.total_cents),
+        }
+        if self._clahe_enabled:
+            debug_info["clahe_bgr"] = prep.clahe_bgr
+
+        return PipelineResult(
+            source_path=source_path,
+            steps=steps,
             circle_count=detection.circle_count,
             hough_params=detection.hough_params,
-            debug_info={
-                "preset": self._preset_name,
-                "plateau_debug": detection.sweep_debug,
-                "sweep_results": detection.sweep_results,
-                "clahe_bgr": prep.clahe_bgr,
-                "split_stats": valuation.split_stats,
-                "value_predictions": valuation.predictions,
-                "value_scale_info": valuation.scale_info,
-                "family_models": valuation.family_models,
-                "value_counts": value_counts,
-                "total_cents": int(valuation.total_cents),
-            },
+            debug_info=debug_info,
         )

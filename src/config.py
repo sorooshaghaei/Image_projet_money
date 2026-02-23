@@ -35,15 +35,17 @@ class PipelineConfig:
     target_width: int = 640
     target_height: int = 480
 
+    clahe_enabled: bool = False
     clahe_clip_limit: float = 2.0
     clahe_tile_grid_size: tuple[int, int] = (8, 8)
 
+    blur_mode: str = "gauss" #or median
     gauss_ksize: int = 5
     gauss_sigma: float = 2.0
 
     active_preset: str = "test1"
 
-    auto_param1_blur_ksize: int = 5
+    auto_param1_blur_ksize: int = gauss_ksize
     auto_param1_percentile: float = 65.0
     auto_param1_scale: float = 1.0
     auto_param1_clamp: tuple[int, int] = (30, 220)
