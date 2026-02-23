@@ -112,30 +112,10 @@ class PipelineConfig:
     clahe_clip_limit: float = 2.0
     clahe_tile_grid_size: tuple[int, int] = (8, 8)
 
-    color_normalization_enabled: bool = False
-    color_balance_strength: float = 0.35
-    color_balance_max_shift_ab: float = 6.0
-    color_balance_max_shift_l: float = 4.0
-    color_saturation_target: float = 108.0
-    color_saturation_strength: float = 0.14
-
     histogram_normalization_enabled: bool = False
     histogram_clip_limit: float = 2.2
     histogram_tile_grid_size: tuple[int, int] = (8, 8)
     histogram_stretch_percentiles: tuple[float, float] = (1.0, 99.0)
-
-    # Euro color anchors in OpenCV LAB scale (L:[0..255], a/b:[0..255]).
-    # Source: U.S. Mint "Alternative Metals Study Final Report" (2012),
-    # Tables 2-15, 2-16 and 2-18 (CIE Lab measurements).
-    # Reference basis:
-    # - "copper-plated" coin material: CIE Lab ~ (78.3, 13.6, 17.1)
-    # - "manganese brass" coin material: CIE Lab ~ (82.3, 2.9, 14.6)
-    # - "cupronickel" coin material: CIE Lab ~ (76.3, 0.8, 6.7)
-    # Converted to OpenCV LAB:
-    # - L_cv = L* * 255/100, a_cv = a* + 128, b_cv = b* + 128
-    euro_reference_lab_bronze: tuple[float, float, float] = (200.0, 142.0, 145.0)
-    euro_reference_lab_gold: tuple[float, float, float] = (210.0, 131.0, 143.0)
-    euro_reference_lab_nickel: tuple[float, float, float] = (195.0, 129.0, 135.0)
 
     blur_mode: str = "gauss"  # or median
     gauss_ksize: int = 5
@@ -161,8 +141,8 @@ class PipelineConfig:
 
     analysis_border_ratio: float = 0.24
     analysis_sat_delta_threshold: float | None = None
-    analysis_bimetal_mode: str = "hybrid"  # hybrid or mean-color
-    analysis_material_mode: str = "hybrid"  # hybrid or lab or hsv
+    analysis_bimetal_mode: str = "hybrid"  # hybrid only
+    analysis_material_mode: str = "hsv"  # hsv only
     viewer_final_only: bool = True
 
     def get_preset(self, preset_name: str | None = None) -> HoughPreset:
@@ -675,15 +655,12 @@ def letterbox_resize_to_canvas(image_bgr: np.ndarray, target_w: int, target_h: i
 class PreprocessingResult:
     image_bgr: np.ndarray
     image_rgb: np.ndarray
-    color_balanced_bgr: np.ndarray
-    color_balanced_rgb: np.ndarray
     hist_norm_bgr: np.ndarray
     hist_norm_rgb: np.ndarray
     clahe_bgr: np.ndarray
     clahe_rgb: np.ndarray
     gray: np.ndarray
     blurred: np.ndarray
-    color_norm_debug: dict[str, Any]
     hist_norm_debug: dict[str, Any]
 
 
@@ -693,19 +670,10 @@ class ImagePreprocessing:
         clahe_enabled: bool = False,
         clahe_clip_limit: float = 2.0,
         clahe_tile_grid_size: tuple[int, int] = (8, 8),
-        color_normalization_enabled: bool = False,
-        color_balance_strength: float = 0.35,
-        color_balance_max_shift_ab: float = 6.0,
-        color_balance_max_shift_l: float = 4.0,
-        color_saturation_target: float = 108.0,
-        color_saturation_strength: float = 0.14,
         histogram_normalization_enabled: bool = False,
         histogram_clip_limit: float = 2.2,
         histogram_tile_grid_size: tuple[int, int] = (8, 8),
         histogram_stretch_percentiles: tuple[float, float] = (1.0, 99.0),
-        euro_reference_lab_bronze: tuple[float, float, float] = (200.0, 142.0, 145.0),
-        euro_reference_lab_gold: tuple[float, float, float] = (210.0, 131.0, 143.0),
-        euro_reference_lab_nickel: tuple[float, float, float] = (195.0, 129.0, 135.0),
         blur_mode: str = "gauss",
         gauss_ksize: int = 5,
         gauss_sigma: float = 2.0,
@@ -713,19 +681,10 @@ class ImagePreprocessing:
         self._clahe_enabled = bool(clahe_enabled)
         self._clahe_clip_limit = float(clahe_clip_limit)
         self._clahe_tile_grid_size = clahe_tile_grid_size
-        self._color_normalization_enabled = bool(color_normalization_enabled)
-        self._color_balance_strength = float(color_balance_strength)
-        self._color_balance_max_shift_ab = float(color_balance_max_shift_ab)
-        self._color_balance_max_shift_l = float(color_balance_max_shift_l)
-        self._color_saturation_target = float(color_saturation_target)
-        self._color_saturation_strength = float(color_saturation_strength)
         self._histogram_normalization_enabled = bool(histogram_normalization_enabled)
         self._histogram_clip_limit = float(histogram_clip_limit)
         self._histogram_tile_grid_size = histogram_tile_grid_size
         self._histogram_stretch_percentiles = histogram_stretch_percentiles
-        self._euro_reference_lab_bronze = euro_reference_lab_bronze
-        self._euro_reference_lab_gold = euro_reference_lab_gold
-        self._euro_reference_lab_nickel = euro_reference_lab_nickel
         self._blur_mode = _normalize_blur_mode(blur_mode)
         self._gauss_ksize = int(gauss_ksize)
         self._gauss_sigma = float(gauss_sigma)
@@ -736,46 +695,15 @@ class ImagePreprocessing:
 
     def process(self, image_bgr: np.ndarray) -> PreprocessingResult:
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        if self._color_normalization_enabled:
-            color_balanced_bgr, color_norm_debug = normalize_color_to_euro_references(
-                image_bgr=image_bgr,
-                strength=self._color_balance_strength,
-                max_shift_ab=self._color_balance_max_shift_ab,
-                max_shift_l=self._color_balance_max_shift_l,
-                saturation_target=self._color_saturation_target,
-                saturation_strength=self._color_saturation_strength,
-                bronze_ref_lab=self._euro_reference_lab_bronze,
-                gold_ref_lab=self._euro_reference_lab_gold,
-                nickel_ref_lab=self._euro_reference_lab_nickel,
-            )
-        else:
-            color_balanced_bgr = image_bgr
-            color_norm_debug = {"enabled": False}
-        color_balanced_rgb = cv2.cvtColor(color_balanced_bgr, cv2.COLOR_BGR2RGB)
 
-        if self._histogram_normalization_enabled:
-            hist_norm_bgr, hist_norm_debug = normalize_luminance_histogram(
-                image_bgr=color_balanced_bgr,
-                clip_limit=self._histogram_clip_limit,
-                tile_grid_size=self._histogram_tile_grid_size,
-                stretch_percentiles=self._histogram_stretch_percentiles,
-            )
-        else:
-            hist_norm_bgr = color_balanced_bgr
-            hist_norm_debug = {"enabled": False}
-        hist_norm_rgb = cv2.cvtColor(hist_norm_bgr, cv2.COLOR_BGR2RGB)
+        # Histogram equalization/normalization path has been intentionally removed.
+        hist_norm_bgr = image_bgr
+        hist_norm_rgb = image_rgb
+        hist_norm_debug = {"enabled": False, "mode": "removed"}
+        clahe_bgr = image_bgr
+        clahe_rgb = image_rgb
 
-        if self._clahe_enabled:
-            clahe_bgr, clahe_rgb = apply_clahe_on_l_channel(
-                hist_norm_bgr,
-                clip_limit=self._clahe_clip_limit,
-                tile_grid_size=self._clahe_tile_grid_size,
-            )
-        else:
-            clahe_bgr = hist_norm_bgr
-            clahe_rgb = hist_norm_rgb
-
-        gray = cv2.cvtColor(clahe_bgr, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
         ksize = _normalize_odd_ksize(self._gauss_ksize)
         if self._blur_mode == "gauss":
             blurred = cv2.GaussianBlur(gray, (ksize, ksize), self._gauss_sigma)
@@ -785,206 +713,14 @@ class ImagePreprocessing:
         return PreprocessingResult(
             image_bgr=image_bgr,
             image_rgb=image_rgb,
-            color_balanced_bgr=color_balanced_bgr,
-            color_balanced_rgb=color_balanced_rgb,
             hist_norm_bgr=hist_norm_bgr,
             hist_norm_rgb=hist_norm_rgb,
             clahe_bgr=clahe_bgr,
             clahe_rgb=clahe_rgb,
             gray=gray,
             blurred=blurred,
-            color_norm_debug=color_norm_debug,
             hist_norm_debug=hist_norm_debug,
         )
-
-
-def _clamp_float(value: float, low: float, high: float) -> float:
-    return low if value < low else high if value > high else value
-
-
-def gray_world_white_balance(image_bgr: np.ndarray, gain_clip: tuple[float, float] = (0.72, 1.40)) -> np.ndarray:
-    image_f = image_bgr.astype(np.float32)
-    channel_means = np.mean(image_f.reshape(-1, 3), axis=0)
-    mean_gray = float(np.mean(channel_means))
-    gains = mean_gray / np.maximum(channel_means, 1e-6)
-    gains = np.clip(gains, gain_clip[0], gain_clip[1]).astype(np.float32)
-    balanced = np.clip(image_f * gains.reshape((1, 1, 3)), 0.0, 255.0).astype(np.uint8)
-    return balanced
-
-
-def _estimate_coin_like_masks(hsv_u8: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    h = hsv_u8[:, :, 0]
-    s = hsv_u8[:, :, 1]
-    v = hsv_u8[:, :, 2]
-
-    warm_mask = (
-        (h >= 7)
-        & (h <= 35)
-        & (s >= 26)
-        & (v >= 30)
-        & (v <= 245)
-    )
-    neutral_mask = (
-        (s <= 45)
-        & (v >= 35)
-        & (v <= 235)
-    )
-    return warm_mask, neutral_mask
-
-
-def normalize_color_to_euro_references(
-    image_bgr: np.ndarray,
-    strength: float = 0.35,
-    max_shift_ab: float = 6.0,
-    max_shift_l: float = 4.0,
-    saturation_target: float = 108.0,
-    saturation_strength: float = 0.14,
-    bronze_ref_lab: tuple[float, float, float] = (200.0, 142.0, 145.0),
-    gold_ref_lab: tuple[float, float, float] = (210.0, 131.0, 143.0),
-    nickel_ref_lab: tuple[float, float, float] = (195.0, 129.0, 135.0),
-) -> tuple[np.ndarray, dict[str, Any]]:
-    wb_bgr = gray_world_white_balance(image_bgr)
-    hsv = cv2.cvtColor(wb_bgr, cv2.COLOR_BGR2HSV)
-    lab = cv2.cvtColor(wb_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
-    warm_mask, neutral_mask = _estimate_coin_like_masks(hsv)
-
-    target_warm_lab = (
-        0.50 * float(bronze_ref_lab[0]) + 0.50 * float(gold_ref_lab[0]),
-        0.46 * float(bronze_ref_lab[1]) + 0.54 * float(gold_ref_lab[1]),
-        0.44 * float(bronze_ref_lab[2]) + 0.56 * float(gold_ref_lab[2]),
-    )
-
-    shift_l = 0.0
-    shift_a = 0.0
-    shift_b = 0.0
-    warm_count = int(np.sum(warm_mask))
-    warm_mean_lab = None
-
-    if warm_count >= 300:
-        warm_pixels = lab[warm_mask]
-        warm_mean = np.median(warm_pixels, axis=0)
-        warm_mean_lab = [float(warm_mean[0]), float(warm_mean[1]), float(warm_mean[2])]
-        shift_l = _clamp_float(
-            (target_warm_lab[0] - warm_mean[0]) * 0.18 * strength,
-            -max_shift_l,
-            max_shift_l,
-        )
-        shift_a = _clamp_float(
-            (target_warm_lab[1] - warm_mean[1]) * 0.45 * strength,
-            -max_shift_ab,
-            max_shift_ab,
-        )
-        shift_b = _clamp_float(
-            (target_warm_lab[2] - warm_mean[2]) * 0.45 * strength,
-            -max_shift_ab,
-            max_shift_ab,
-        )
-
-    neutral_count = int(np.sum(neutral_mask))
-    neutral_a_shift = 0.0
-    neutral_b_shift = 0.0
-    if neutral_count >= 400:
-        neutral_pixels = lab[neutral_mask]
-        neutral_mean = np.median(neutral_pixels, axis=0)
-        neutral_a_shift = _clamp_float(
-            (float(nickel_ref_lab[1]) - float(neutral_mean[1])) * 0.20 * strength,
-            -3.0,
-            3.0,
-        )
-        neutral_b_shift = _clamp_float(
-            (float(nickel_ref_lab[2]) - float(neutral_mean[2])) * 0.20 * strength,
-            -3.0,
-            3.0,
-        )
-
-    lab[:, :, 0] = np.clip(lab[:, :, 0] + shift_l, 0.0, 255.0)
-    lab[:, :, 1] = np.clip(lab[:, :, 1] + shift_a + neutral_a_shift, 0.0, 255.0)
-    lab[:, :, 2] = np.clip(lab[:, :, 2] + shift_b + neutral_b_shift, 0.0, 255.0)
-
-    balanced_bgr = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
-    balanced_hsv = cv2.cvtColor(balanced_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
-
-    sat_values = balanced_hsv[:, :, 1][warm_mask]
-    if sat_values.size < 120:
-        sat_values = balanced_hsv[:, :, 1].reshape(-1)
-    sat_median = float(np.median(sat_values)) if sat_values.size > 0 else 0.0
-    sat_scale = 1.0
-    if sat_median > 1.0:
-        sat_scale = (float(saturation_target) / sat_median) ** float(saturation_strength)
-        sat_scale = _clamp_float(sat_scale, 0.93, 1.08)
-        balanced_hsv[:, :, 1] = np.clip(balanced_hsv[:, :, 1] * sat_scale, 0.0, 255.0)
-
-    balanced_bgr = cv2.cvtColor(balanced_hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-    debug_info: dict[str, Any] = {
-        "enabled": True,
-        "warm_pixel_count": warm_count,
-        "neutral_pixel_count": neutral_count,
-        "warm_mean_lab": warm_mean_lab,
-        "target_warm_lab": [float(target_warm_lab[0]), float(target_warm_lab[1]), float(target_warm_lab[2])],
-        "shift_l": float(shift_l),
-        "shift_a": float(shift_a + neutral_a_shift),
-        "shift_b": float(shift_b + neutral_b_shift),
-        "reference_lab": {
-            "bronze": [float(bronze_ref_lab[0]), float(bronze_ref_lab[1]), float(bronze_ref_lab[2])],
-            "gold": [float(gold_ref_lab[0]), float(gold_ref_lab[1]), float(gold_ref_lab[2])],
-            "nickel": [float(nickel_ref_lab[0]), float(nickel_ref_lab[1]), float(nickel_ref_lab[2])],
-        },
-        "sat_median_before": float(sat_median),
-        "sat_scale": float(sat_scale),
-    }
-    return balanced_bgr, debug_info
-
-
-def _percentile_stretch_u8(channel_u8: np.ndarray, p_low: float, p_high: float) -> tuple[np.ndarray, float, float]:
-    low = float(np.percentile(channel_u8, p_low))
-    high = float(np.percentile(channel_u8, p_high))
-    if high <= low + 1.0:
-        return channel_u8.copy(), low, high
-    out = ((channel_u8.astype(np.float32) - low) * (255.0 / (high - low)))
-    out = np.clip(out, 0.0, 255.0).astype(np.uint8)
-    return out, low, high
-
-
-def normalize_luminance_histogram(
-    image_bgr: np.ndarray,
-    clip_limit: float = 2.2,
-    tile_grid_size: tuple[int, int] = (8, 8),
-    stretch_percentiles: tuple[float, float] = (1.0, 99.0),
-) -> tuple[np.ndarray, dict[str, Any]]:
-    lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
-    l_channel, a_channel, b_channel = cv2.split(lab)
-
-    clahe = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=tile_grid_size)
-    l_clahe = clahe.apply(l_channel)
-
-    p_low, p_high = stretch_percentiles
-    l_norm, lo, hi = _percentile_stretch_u8(l_clahe, p_low=float(p_low), p_high=float(p_high))
-    out_bgr = cv2.cvtColor(cv2.merge((l_norm, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
-    debug_info: dict[str, Any] = {
-        "enabled": True,
-        "clip_limit": float(clip_limit),
-        "tile_grid_size": [int(tile_grid_size[0]), int(tile_grid_size[1])],
-        "stretch_percentiles": [float(p_low), float(p_high)],
-        "l_percentile_low": float(lo),
-        "l_percentile_high": float(hi),
-    }
-    return out_bgr, debug_info
-
-
-def apply_clahe_on_l_channel(
-    image_bgr: np.ndarray,
-    clip_limit: float,
-    tile_grid_size: tuple[int, int],
-) -> tuple[np.ndarray, np.ndarray]:
-    lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
-    l_channel, a_channel, b_channel = cv2.split(lab)
-
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
-    l_clahe = clahe.apply(l_channel)
-
-    clahe_bgr = cv2.cvtColor(cv2.merge((l_clahe, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
-    clahe_rgb = cv2.cvtColor(clahe_bgr, cv2.COLOR_BGR2RGB)
-    return clahe_bgr, clahe_rgb
 
 
 def _normalize_blur_mode(mode: str) -> str:
@@ -1354,29 +1090,6 @@ def mean_hsv_from_pixels(hsv_pixels: np.ndarray) -> tuple[int, int, int]:
     return h_cv, s_cv, v_cv
 
 
-def mean_lab_from_pixels(lab_pixels: np.ndarray) -> tuple[float, float, float]:
-    if lab_pixels is None or len(lab_pixels) == 0:
-        return 0.0, 0.0, 0.0
-
-    l_vals = lab_pixels[:, 0].astype(np.float32)
-    a_vals = lab_pixels[:, 1].astype(np.float32)
-    b_vals = lab_pixels[:, 2].astype(np.float32)
-    return float(np.mean(l_vals)), float(np.mean(a_vals)), float(np.mean(b_vals))
-
-
-def lab_distance(lab_a: tuple[float, float, float], lab_b: tuple[float, float, float]) -> float:
-    dl = float(lab_a[0]) - float(lab_b[0])
-    da = float(lab_a[1]) - float(lab_b[1])
-    db = float(lab_a[2]) - float(lab_b[2])
-    return float(np.sqrt((0.55 * dl) * (0.55 * dl) + da * da + db * db))
-
-
-def lab_warmth(lab_color: tuple[float, float, float]) -> float:
-    a_shift = float(lab_color[1]) - 128.0
-    b_shift = float(lab_color[2]) - 128.0
-    return float(b_shift - 0.45 * max(a_shift, 0.0))
-
-
 def hsv_similarity_score(hsv_a: tuple[int, int, int], hsv_b: tuple[int, int, int]) -> float:
     _, sa, _ = hsv_a
     _, sb, _ = hsv_b
@@ -1461,26 +1174,6 @@ def gold_score_from_inner_hsv(h: int, s: int, v: int) -> float:
     return float(np.clip(h_term * max(0.30, conf), 0.0, 1.0))
 
 
-def bronze_score_from_inner_lab(l: float, a: float, b: float) -> float:
-    a_shift = float(a) - 128.0
-    b_shift = float(b) - 128.0
-    red_term = clamp_value((a_shift - 4.0) / 22.0, 0.0, 1.0)
-    warm_term = clamp_value((b_shift - 2.0) / 26.0, 0.0, 1.0)
-    dark_term = clamp_value((150.0 - float(l)) / 80.0, 0.0, 1.0)
-    return float(np.clip(0.55 * red_term + 0.25 * warm_term + 0.20 * dark_term, 0.0, 1.0))
-
-
-def gold_score_from_inner_lab(l: float, a: float, b: float) -> float:
-    a_shift = float(a) - 128.0
-    b_shift = float(b) - 128.0
-    yellow_term = clamp_value((b_shift - 10.0) / 24.0, 0.0, 1.0)
-    bright_term = clamp_value((float(l) - 92.0) / 70.0, 0.0, 1.0)
-    low_red_term = 1.0 - clamp_value((a_shift - 14.0) / 22.0, 0.0, 1.0)
-    red_dominance = clamp_value((a_shift - (0.72 * b_shift + 1.5)) / 15.0, 0.0, 1.0)
-    base_score = 0.55 * yellow_term + 0.25 * bright_term + 0.20 * low_red_term
-    return float(np.clip(base_score * (1.0 - 0.45 * red_dominance), 0.0, 1.0))
-
-
 def label_material_from_inner_hsv(h: int, s: int, v: int) -> str:
     if s < 45 or v < 35:
         return "borderline"
@@ -1490,99 +1183,12 @@ def label_material_from_inner_hsv(h: int, s: int, v: int) -> str:
         return "gold"
     return "borderline"
 
-
-def label_material_from_inner_lab(l: float, a: float, b: float) -> str:
-    bronze_score = bronze_score_from_inner_lab(l, a, b)
-    gold_score = gold_score_from_inner_lab(l, a, b)
-    if abs(gold_score - bronze_score) < 0.10:
-        return "borderline"
-    return "gold" if gold_score > bronze_score else "bronze"
-
-
-def classify_material_hybrid(
-    h: int,
-    s: int,
-    v: int,
-    l: float,
-    a: float,
-    b: float,
-) -> dict[str, float | str]:
-    bronze_hsv = bronze_score_from_inner_hsv(h, s, v)
-    gold_hsv = gold_score_from_inner_hsv(h, s, v)
-    bronze_lab = bronze_score_from_inner_lab(l, a, b)
-    gold_lab = gold_score_from_inner_lab(l, a, b)
-
-    hsv_weight = 0.62 if s >= 70 else 0.54
-    lab_weight = 1.0 - hsv_weight
-
-    bronze_score = hsv_weight * bronze_hsv + lab_weight * bronze_lab
-    gold_score = hsv_weight * gold_hsv + lab_weight * gold_lab
-
-    a_shift = float(a) - 128.0
-    b_shift = float(b) - 128.0
-    red_dominance = clamp_value((a_shift - (0.72 * b_shift + 1.5)) / 15.0, 0.0, 1.0)
-
-    if h <= 15 and s >= 55:
-        bronze_score = min(1.0, bronze_score + 0.16)
-        gold_score = max(0.0, gold_score - 0.12)
-    elif h >= 20 and s >= 55:
-        gold_score = min(1.0, gold_score + 0.08)
-
-    if red_dominance > 0.0:
-        bronze_score = min(1.0, bronze_score + 0.12 * red_dominance)
-        gold_score = max(0.0, gold_score - 0.16 * red_dominance)
-
-    margin = abs(gold_score - bronze_score)
-    max_score = max(gold_score, bronze_score)
-    if max_score < 0.35 or margin < 0.12:
-        label = "borderline"
-    else:
-        label = "gold" if gold_score > bronze_score else "bronze"
-
-    return {
-        "label": label,
-        "bronze_score": float(np.clip(bronze_score, 0.0, 1.0)),
-        "gold_score": float(np.clip(gold_score, 0.0, 1.0)),
-        "bronze_score_hsv": float(np.clip(bronze_hsv, 0.0, 1.0)),
-        "gold_score_hsv": float(np.clip(gold_hsv, 0.0, 1.0)),
-        "bronze_score_lab": float(np.clip(bronze_lab, 0.0, 1.0)),
-        "gold_score_lab": float(np.clip(gold_lab, 0.0, 1.0)),
-        "margin": float(margin),
-    }
-
 def label_bimetal_euro_from_saturation(inner_s: int, border_s: int) -> str:
     if inner_s < border_s:
         return "1-euro-like"
     if inner_s > border_s:
         return "2-euro-like"
     return "bi-metal-euro-uncertain"
-
-
-def label_bimetal_euro_from_mean_lab(
-    inner_lab: tuple[float, float, float],
-    border_lab: tuple[float, float, float],
-) -> str:
-    inner_warm = lab_warmth(inner_lab)
-    border_warm = lab_warmth(border_lab)
-    delta_warm = inner_warm - border_warm
-
-    if delta_warm >= 2.0:
-        return "2-euro-like"
-    if delta_warm <= -2.0:
-        return "1-euro-like"
-
-    inner_chroma = float(
-        np.hypot(float(inner_lab[1]) - 128.0, float(inner_lab[2]) - 128.0)
-    )
-    border_chroma = float(
-        np.hypot(float(border_lab[1]) - 128.0, float(border_lab[2]) - 128.0)
-    )
-    if (inner_chroma - border_chroma) >= 4.0:
-        return "2-euro-like"
-    if (border_chroma - inner_chroma) >= 4.0:
-        return "1-euro-like"
-    return "bi-metal-euro-uncertain"
-
 
 def coin_kmeans_radial_structure(hsv_pixels: np.ndarray, radial_norm: np.ndarray) -> dict[str, float | bool]:
     n = int(hsv_pixels.shape[0])
@@ -1780,8 +1386,8 @@ def coin_edge_roughness_score(
 class CoinAnalyzerConfig:
     border_ratio: float = 0.24
     sat_delta_threshold: float | None = None
-    bimetal_mode: str = "mean-color"
-    material_mode: str = "hybrid"
+    bimetal_mode: str = "hybrid"
+    material_mode: str = "hsv"
 
 
 class CoinAnalyzer:
@@ -1881,15 +1487,15 @@ def draw_and_analyze_circle_inner_border_colors(
     circles: np.ndarray | None,
     border_ratio: float = 0.24,
     sat_delta_threshold: float | None = None,
-    bimetal_mode: str = "mean-color",
-    material_mode: str = "hybrid",
+    bimetal_mode: str = "hybrid",
+    material_mode: str = "hsv",
 ) -> tuple[np.ndarray, list[dict]]:
     bimetal_mode = str(bimetal_mode).strip().lower()
-    if bimetal_mode not in ("hybrid", "mean-color"):
-        raise ValueError("bimetal_mode must be one of: 'hybrid', 'mean-color'")
+    if bimetal_mode != "hybrid":
+        raise ValueError("bimetal_mode must be: 'hybrid'")
     material_mode = str(material_mode).strip().lower()
-    if material_mode not in ("hsv", "lab", "hybrid"):
-        raise ValueError("material_mode must be one of: 'hsv', 'lab', 'hybrid'")
+    if material_mode != "hsv":
+        raise ValueError("material_mode must be: 'hsv'")
 
     output_bgr = image_bgr.copy()
     stats: list[dict] = []
@@ -1897,14 +1503,12 @@ def draw_and_analyze_circle_inner_border_colors(
         return cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB), stats
 
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-    lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
     gray_shape = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     circles_int = np.round(circles[0, :]).astype(int)
     h_img, w_img = image_bgr.shape[:2]
 
     rows: list[dict] = []
     color_deltas_hybrid: list[float] = []
-    color_deltas_mean: list[float] = []
 
     for idx, (x, y, r) in enumerate(circles_int):
         x = int(x)
@@ -1922,16 +1526,10 @@ def draw_and_analyze_circle_inner_border_colors(
         pix_full_hsv = hsv[outer_mask > 0]
         pix_inner_hsv = hsv[inner_mask > 0]
         pix_border_hsv = hsv[border_mask > 0]
-        pix_full_lab = lab[outer_mask > 0]
-        pix_inner_lab = lab[inner_mask > 0]
-        pix_border_lab = lab[border_mask > 0]
 
         full_hsv = mean_hsv_from_pixels(pix_full_hsv)
         inner_hsv = mean_hsv_from_pixels(pix_inner_hsv)
         border_hsv = mean_hsv_from_pixels(pix_border_hsv)
-        full_lab = mean_lab_from_pixels(pix_full_lab)
-        inner_lab = mean_lab_from_pixels(pix_inner_lab)
-        border_lab = mean_lab_from_pixels(pix_border_lab)
 
         similarity = hsv_similarity_score(inner_hsv, border_hsv)
         sat_delta = abs(float(inner_hsv[1]) - float(border_hsv[1]))
@@ -1944,12 +1542,7 @@ def draw_and_analyze_circle_inner_border_colors(
         value_term = 0.15 * val_delta
         color_delta = float(sat_delta + hue_term + value_term)
 
-        lab_delta = lab_distance(inner_lab, border_lab)
-        mean_warm_delta = abs(lab_warmth(inner_lab) - lab_warmth(border_lab))
-        mean_color_delta = float(lab_delta + 0.18 * mean_warm_delta)
-
         color_deltas_hybrid.append(color_delta)
-        color_deltas_mean.append(mean_color_delta)
 
         ys, xs = np.where(outer_mask > 0)
         if len(xs) > 0:
@@ -1976,9 +1569,9 @@ def draw_and_analyze_circle_inner_border_colors(
                 "full_hsv": full_hsv,
                 "inner_hsv": inner_hsv,
                 "border_hsv": border_hsv,
-                "full_lab": full_lab,
-                "inner_lab": inner_lab,
-                "border_lab": border_lab,
+                "full_lab": (0.0, 0.0, 0.0),
+                "inner_lab": (0.0, 0.0, 0.0),
+                "border_lab": (0.0, 0.0, 0.0),
                 "similarity": float(similarity),
                 "sat_delta": float(sat_delta),
                 "hue_delta": float(hue_delta),
@@ -1987,9 +1580,9 @@ def draw_and_analyze_circle_inner_border_colors(
                 "hue_term": float(hue_term),
                 "value_term": float(value_term),
                 "color_delta": float(color_delta),
-                "lab_delta": float(lab_delta),
-                "mean_warm_delta": float(mean_warm_delta),
-                "mean_color_delta": float(mean_color_delta),
+                "lab_delta": 0.0,
+                "mean_warm_delta": 0.0,
+                "mean_color_delta": 0.0,
                 "kmeans_radial_ok": bool(radial_kmeans["ok"]),
                 "kmeans_radial_score": float(radial_kmeans["score"]),
                 "kmeans_radial_sep": float(radial_kmeans["radial_sep"]),
@@ -2006,21 +1599,13 @@ def draw_and_analyze_circle_inner_border_colors(
         )
 
     outlier_threshold_hybrid = choose_dynamic_sat_delta_threshold(color_deltas_hybrid, default=18.0)
-    outlier_threshold_mean = choose_dynamic_sat_delta_threshold(color_deltas_mean, default=14.0)
     if sat_delta_threshold is not None:
-        if bimetal_mode == "hybrid":
-            outlier_threshold_hybrid = float(sat_delta_threshold)
-        else:
-            outlier_threshold_mean = float(sat_delta_threshold)
+        outlier_threshold_hybrid = float(sat_delta_threshold)
 
     hybrid_abs_mid = 16.0
     hybrid_abs_hi = 22.0
     hybrid_abs_vhi = 30.0
     hybrid_abs_lo = 10.0
-    mean_abs_mid = 11.5
-    mean_abs_hi = 15.5
-    mean_abs_vhi = 22.0
-    mean_abs_lo = 8.0
 
     for row in rows:
         x = row["x"]
@@ -2030,128 +1615,65 @@ def draw_and_analyze_circle_inner_border_colors(
         full_hsv = row["full_hsv"]
         inner_hsv = row["inner_hsv"]
         border_hsv = row["border_hsv"]
-        inner_lab = row["inner_lab"]
-        border_lab = row["border_lab"]
 
         color_delta = float(row["color_delta"])
         sat_delta = float(row["sat_delta"])
         hue_delta = float(row["hue_delta"])
-        lab_delta = float(row["lab_delta"])
-        mean_warm_delta = float(row["mean_warm_delta"])
-        mean_color_delta = float(row["mean_color_delta"])
         bronze_veto_applied = False
-        outlier_vote_for_veto = False
-        kmeans_support_for_veto = False
 
-        if bimetal_mode == "hybrid":
-            outlier_threshold = outlier_threshold_hybrid
-            abs_mid = hybrid_abs_mid
-            abs_hi = hybrid_abs_hi
-            abs_vhi = hybrid_abs_vhi
-            abs_lo = hybrid_abs_lo
+        outlier_threshold = outlier_threshold_hybrid
+        abs_mid = hybrid_abs_mid
+        abs_hi = hybrid_abs_hi
+        abs_vhi = hybrid_abs_vhi
+        abs_lo = hybrid_abs_lo
 
-            outlier_vote = color_delta >= outlier_threshold
-            mid_delta = color_delta >= abs_mid
-            strong_delta = color_delta >= abs_hi
-            very_strong_delta = color_delta >= abs_vhi
+        outlier_vote = color_delta >= outlier_threshold
+        mid_delta = color_delta >= abs_mid
+        strong_delta = color_delta >= abs_hi
+        very_strong_delta = color_delta >= abs_vhi
 
-            kmeans_ok = bool(row["kmeans_radial_ok"])
-            step_ok = bool(row["step_ok"])
-            kmeans_strong = bool(kmeans_ok and (float(row["kmeans_radial_score"]) >= 0.82))
-            step_strong = bool(step_ok and (float(row["step_score"]) >= 0.70))
-            kmeans_support = bool(
-                kmeans_ok
-                and (float(row["kmeans_radial_agreement"]) >= 0.64)
-                and (float(row["kmeans_radial_balance"]) >= 0.12)
-            )
-            step_support = bool(step_ok and (float(row["step_score"]) >= 0.75))
-            structure_votes = int(kmeans_support) + int(step_support)
-            structure_strong_votes = int(kmeans_strong) + int(step_strong)
-            outlier_vote_for_veto = bool(outlier_vote)
-            kmeans_support_for_veto = bool(kmeans_support)
+        kmeans_ok = bool(row["kmeans_radial_ok"])
+        step_ok = bool(row["step_ok"])
+        kmeans_support = bool(
+            kmeans_ok
+            and (float(row["kmeans_radial_agreement"]) >= 0.64)
+            and (float(row["kmeans_radial_balance"]) >= 0.12)
+        )
+        step_support = bool(step_ok and (float(row["step_score"]) >= 0.75))
+        structure_votes = int(kmeans_support) + int(step_support)
 
-            strong_color_evidence = bool(
-                (sat_delta >= 22.0) or (hue_delta >= 10.0 and sat_delta >= 10.0) or (color_delta >= abs_vhi)
-            )
-            evidence = int(strong_delta) + int(outlier_vote) + structure_votes + int(strong_color_evidence)
+        strong_color_evidence = bool(
+            (sat_delta >= 22.0) or (hue_delta >= 10.0 and sat_delta >= 10.0) or (color_delta >= abs_vhi)
+        )
+        evidence = int(strong_delta) + int(outlier_vote) + structure_votes + int(strong_color_evidence)
 
-            if strong_color_evidence and very_strong_delta and (outlier_vote or kmeans_support):
-                detector_type = "bi-metal-like"
-            elif strong_color_evidence and strong_delta and (
-                (outlier_vote and structure_votes >= 1)
-                or kmeans_support
-            ):
-                detector_type = "bi-metal-like"
-            elif strong_color_evidence and mid_delta and outlier_vote and (kmeans_support and step_support):
-                detector_type = "bi-metal-like"
-            elif (not outlier_vote) and (color_delta < 20.0) and (sat_delta <= 18.0) and (hue_delta <= 8.0):
-                detector_type = "one-color-like"
-            elif (color_delta <= 14.0) and (sat_delta <= 12.0) and (hue_delta <= 10.0):
-                detector_type = "one-color-like"
-            elif (color_delta <= abs_lo) and (structure_votes <= 1):
-                detector_type = "one-color-like"
-            elif (not strong_color_evidence) and (not outlier_vote) and (color_delta <= (abs_hi + 2.0)):
-                detector_type = "one-color-like"
-            elif (
-                (not outlier_vote)
-                and (not kmeans_support)
-                and strong_color_evidence
-                and (int(inner_hsv[0]) <= 15)
-                and (int(inner_hsv[1]) >= 120)
-            ):
-                detector_type = "one-color-like"
-            else:
-                detector_type = "uncertain"
+        if strong_color_evidence and very_strong_delta and (outlier_vote or kmeans_support):
+            detector_type = "bi-metal-like"
+        elif strong_color_evidence and strong_delta and ((outlier_vote and structure_votes >= 1) or kmeans_support):
+            detector_type = "bi-metal-like"
+        elif strong_color_evidence and mid_delta and outlier_vote and (kmeans_support and step_support):
+            detector_type = "bi-metal-like"
+        elif (not outlier_vote) and (color_delta < 20.0) and (sat_delta <= 18.0) and (hue_delta <= 8.0):
+            detector_type = "one-color-like"
+        elif (color_delta <= 14.0) and (sat_delta <= 12.0) and (hue_delta <= 10.0):
+            detector_type = "one-color-like"
+        elif (color_delta <= abs_lo) and (structure_votes <= 1):
+            detector_type = "one-color-like"
+        elif (not strong_color_evidence) and (not outlier_vote) and (color_delta <= (abs_hi + 2.0)):
+            detector_type = "one-color-like"
+        elif (
+            (not outlier_vote)
+            and (not kmeans_support)
+            and strong_color_evidence
+            and (int(inner_hsv[0]) <= 15)
+            and (int(inner_hsv[1]) >= 120)
+        ):
+            detector_type = "one-color-like"
         else:
-            outlier_threshold = outlier_threshold_mean
-            abs_mid = mean_abs_mid
-            abs_hi = mean_abs_hi
-            abs_vhi = mean_abs_vhi
-            abs_lo = mean_abs_lo
-
-            outlier_vote = mean_color_delta >= outlier_threshold
-            strong_delta = mean_color_delta >= abs_hi
-            very_strong_delta = mean_color_delta >= abs_vhi
-
-            strong_color_evidence = bool(
-                strong_delta or (lab_delta >= 14.0) or (mean_warm_delta >= 5.0 and mean_color_delta >= abs_mid)
-            )
-            evidence = int(strong_delta) + int(outlier_vote) + int(lab_delta >= 14.0) + int(mean_warm_delta >= 5.0)
-            outlier_vote_for_veto = bool(outlier_vote)
-
-            if strong_color_evidence and (very_strong_delta or (strong_delta and outlier_vote)):
-                detector_type = "bi-metal-like"
-            elif (mean_color_delta <= abs_lo) and (mean_warm_delta <= 3.2) and (sat_delta <= 16.0):
-                detector_type = "one-color-like"
-            elif (not strong_color_evidence) and (not outlier_vote) and (mean_color_delta <= (abs_hi + 1.5)):
-                detector_type = "one-color-like"
-            else:
-                detector_type = "uncertain"
-
-        if detector_type == "bi-metal-like" and bimetal_mode == "hybrid":
-            inner_h = int(inner_hsv[0])
-            inner_s = int(inner_hsv[1])
-            inner_v = int(inner_hsv[2])
-            inner_l = float(inner_lab[0])
-            inner_a = float(inner_lab[1])
-            inner_b = float(inner_lab[2])
-            hybrid_material = classify_material_hybrid(inner_h, inner_s, inner_v, inner_l, inner_a, inner_b)
-            bronze_margin = float(hybrid_material["bronze_score"]) - float(hybrid_material["gold_score"])
-
-            if (
-                (not outlier_vote_for_veto)
-                and (not kmeans_support_for_veto)
-                and str(hybrid_material["label"]) == "bronze"
-                and bronze_margin >= 0.18
-            ):
-                detector_type = "one-color-like"
-                bronze_veto_applied = True
+            detector_type = "uncertain"
 
         if detector_type == "bi-metal-like":
-            if bimetal_mode == "mean-color":
-                bimetal_euro_label = label_bimetal_euro_from_mean_lab(inner_lab, border_lab)
-            else:
-                bimetal_euro_label = label_bimetal_euro_from_saturation(int(inner_hsv[1]), int(border_hsv[1]))
+            bimetal_euro_label = label_bimetal_euro_from_saturation(int(inner_hsv[1]), int(border_hsv[1]))
             final_label = bimetal_euro_label
             bronze_score = 0.0
             bronze_score_hsv = 0.0
@@ -2169,29 +1691,18 @@ def draw_and_analyze_circle_inner_border_colors(
             inner_h = int(inner_hsv[0])
             inner_s = int(inner_hsv[1])
             inner_v = int(inner_hsv[2])
-            inner_l = float(inner_lab[0])
-            inner_a = float(inner_lab[1])
-            inner_b = float(inner_lab[2])
 
             bronze_score_hsv = bronze_score_from_inner_hsv(inner_h, inner_s, inner_v)
             gold_score_hsv = gold_score_from_inner_hsv(inner_h, inner_s, inner_v)
-            bronze_score_lab = bronze_score_from_inner_lab(inner_l, inner_a, inner_b)
-            gold_score_lab = gold_score_from_inner_lab(inner_l, inner_a, inner_b)
-            hybrid_material = classify_material_hybrid(inner_h, inner_s, inner_v, inner_l, inner_a, inner_b)
-            bronze_score_hybrid = float(hybrid_material["bronze_score"])
-            gold_score_hybrid = float(hybrid_material["gold_score"])
+            bronze_score_lab = bronze_score_hsv
+            gold_score_lab = gold_score_hsv
+            bronze_score_hybrid = bronze_score_hsv
+            gold_score_hybrid = gold_score_hsv
             material_label_hsv = label_material_from_inner_hsv(inner_h, inner_s, inner_v)
-            material_label_lab = label_material_from_inner_lab(inner_l, inner_a, inner_b)
-            material_label_hybrid = str(hybrid_material["label"])
-            if material_mode == "hsv":
-                bronze_score = bronze_score_hsv
-                material_label = material_label_hsv
-            elif material_mode == "lab":
-                bronze_score = bronze_score_lab
-                material_label = material_label_lab
-            else:
-                bronze_score = bronze_score_hybrid
-                material_label = material_label_hybrid
+            material_label_lab = material_label_hsv
+            material_label_hybrid = material_label_hsv
+            bronze_score = bronze_score_hsv
+            material_label = material_label_hsv
 
             if detector_type == "uncertain":
                 final_label = "uncertain"
@@ -2780,8 +2291,8 @@ class CoinValueEstimator:
         self,
         border_ratio: float = 0.24,
         sat_delta_threshold: float | None = None,
-        bimetal_mode: str = "mean-color",
-        material_mode: str = "hybrid",
+        bimetal_mode: str = "hybrid",
+        material_mode: str = "hsv",
     ):
         self._analyzer = CoinAnalyzer(
             CoinAnalyzerConfig(
@@ -2861,19 +2372,10 @@ class CirclePipelineProcessor:
             clahe_enabled=self._clahe_enabled,
             clahe_clip_limit=config.clahe_clip_limit,
             clahe_tile_grid_size=config.clahe_tile_grid_size,
-            color_normalization_enabled=config.color_normalization_enabled,
-            color_balance_strength=config.color_balance_strength,
-            color_balance_max_shift_ab=config.color_balance_max_shift_ab,
-            color_balance_max_shift_l=config.color_balance_max_shift_l,
-            color_saturation_target=config.color_saturation_target,
-            color_saturation_strength=config.color_saturation_strength,
             histogram_normalization_enabled=config.histogram_normalization_enabled,
             histogram_clip_limit=config.histogram_clip_limit,
             histogram_tile_grid_size=config.histogram_tile_grid_size,
             histogram_stretch_percentiles=config.histogram_stretch_percentiles,
-            euro_reference_lab_bronze=config.euro_reference_lab_bronze,
-            euro_reference_lab_gold=config.euro_reference_lab_gold,
-            euro_reference_lab_nickel=config.euro_reference_lab_nickel,
             blur_mode=config.blur_mode,
             gauss_ksize=config.gauss_ksize,
             gauss_sigma=config.gauss_sigma,
@@ -2921,19 +2423,13 @@ class CirclePipelineProcessor:
             detection_blurred = detection_gray if ksize <= 1 else cv2.medianBlur(detection_gray, ksize)
 
         detection = self._detector.detect(detection_gray, detection_blurred, prep.image_rgb)
-        valuation_input_bgr = prep.hist_norm_bgr if self._cfg.histogram_normalization_enabled else prep.color_balanced_bgr
+        valuation_input_bgr = prep.image_bgr
         valuation = self._value_estimator.estimate(valuation_input_bgr, detection.circles)
 
         value_counts = valuation.counts if len(valuation.counts) > 0 else {d: 0 for d in ValueEstimator.DENOM_PRINT_ORDER}
         steps = [
             PipelineStep("Original (Letterbox 640x480)", prep.image_rgb, "rgb"),
         ]
-        if self._cfg.color_normalization_enabled:
-            steps.append(PipelineStep("Color Normalized (Euro Etalon)", prep.color_balanced_rgb, "rgb"))
-        if self._cfg.histogram_normalization_enabled:
-            steps.append(PipelineStep("Histogram Normalized (L-channel)", prep.hist_norm_rgb, "rgb"))
-        if self._clahe_enabled:
-            steps.append(PipelineStep("CLAHE (L channel)", prep.clahe_rgb, "rgb"))
         steps.extend(
             [
                 PipelineStep("Grayscale", prep.gray, "gray"),
@@ -2949,13 +2445,9 @@ class CirclePipelineProcessor:
             "sweep_results": detection.sweep_results,
             "clahe_enabled": self._clahe_enabled,
             "blur_mode": self._cfg.blur_mode,
-            "color_normalization_enabled": self._cfg.color_normalization_enabled,
-            "histogram_normalization_enabled": self._cfg.histogram_normalization_enabled,
-            "color_norm_debug": prep.color_norm_debug,
+            "histogram_normalization_enabled": False,
             "hist_norm_debug": prep.hist_norm_debug,
-            "valuation_input_stage": (
-                "hist_norm_bgr" if self._cfg.histogram_normalization_enabled else "color_balanced_bgr"
-            ),
+            "valuation_input_stage": "image_bgr",
             "split_stats": valuation.split_stats,
             "value_predictions": valuation.predictions,
             "value_scale_info": valuation.scale_info,
@@ -2963,8 +2455,7 @@ class CirclePipelineProcessor:
             "value_counts": value_counts,
             "total_cents": int(valuation.total_cents),
         }
-        if self._clahe_enabled:
-            debug_info["clahe_bgr"] = prep.clahe_bgr
+        # CLAHE output is intentionally omitted because histogram equalization is disabled.
 
         return PipelineResult(
             source_path=source_path,
@@ -3387,24 +2878,7 @@ class OneFileViewer:
             f"minR={hough.get('minRadius', 'n/a')}  maxR={hough.get('maxRadius', 'n/a')}"
         )
 
-        color_norm_debug = info.get("color_norm_debug", {})
-        hist_norm_debug = info.get("hist_norm_debug", {})
-        if isinstance(color_norm_debug, dict) and bool(color_norm_debug.get("enabled", False)):
-            color_norm_line = (
-                f"sat_scale={float(color_norm_debug.get('sat_scale', 1.0)):.3f}  "
-                f"shift_a={float(color_norm_debug.get('shift_a', 0.0)):+.2f}  "
-                f"shift_b={float(color_norm_debug.get('shift_b', 0.0)):+.2f}"
-            )
-        else:
-            color_norm_line = "disabled"
-
-        if isinstance(hist_norm_debug, dict) and bool(hist_norm_debug.get("enabled", False)):
-            p = hist_norm_debug.get("stretch_percentiles", [1.0, 99.0])
-            lo = float(hist_norm_debug.get("l_percentile_low", 0.0))
-            hi = float(hist_norm_debug.get("l_percentile_high", 255.0))
-            hist_norm_line = f"p=[{float(p[0]):.1f},{float(p[1]):.1f}]  L=[{lo:.1f},{hi:.1f}]"
-        else:
-            hist_norm_line = "disabled"
+        hist_norm_line = "removed"
 
         text = (
             "DEBUG PANEL\n"
@@ -3430,7 +2904,6 @@ class OneFileViewer:
             f"{hough_line}\n"
             "\n"
             "normalization\n"
-            f"  color_norm : {color_norm_line}\n"
             f"  hist_norm  : {hist_norm_line}\n"
             "\n"
             "keys\n"
@@ -3456,10 +2929,6 @@ class OneFileRunner:
         config = PipelineConfig()
         if args.dataset_dir is not None:
             config = replace(config, dataset_dir=Path(args.dataset_dir).expanduser().resolve())
-        if args.color_norm is not None:
-            config = replace(config, color_normalization_enabled=bool(args.color_norm))
-        if args.hist_norm is not None:
-            config = replace(config, histogram_normalization_enabled=bool(args.hist_norm))
 
         preset_name = args.preset or config.active_preset
         if preset_name not in HOUGH_PRESETS:
@@ -3482,10 +2951,7 @@ class OneFileRunner:
             console.print("[cyan][INFO] Evaluation groups:[/cyan] all")
         else:
             console.print(f"[cyan][INFO] Evaluation groups:[/cyan] {', '.join(sorted(eval_groups))}")
-        console.print(
-            f"[cyan][INFO] Color norm:[/cyan] {config.color_normalization_enabled} | "
-            f"[cyan][INFO] Hist norm:[/cyan] {config.histogram_normalization_enabled}"
-        )
+        console.print("[cyan][INFO] Color anchoring:[/cyan] removed")
         print()
 
         # Set up the main results table
@@ -3781,32 +3247,6 @@ class OneFileRunner:
             nargs="*",
             default=None,
             help="Evaluate only these groups (e.g. --eval-groups gp1 gp2 or --eval-groups gp1,gp2).",
-        )
-        parser.add_argument(
-            "--color-norm",
-            dest="color_norm",
-            action="store_true",
-            default=None,
-            help="Enable euro-reference color normalization before value estimation.",
-        )
-        parser.add_argument(
-            "--no-color-norm",
-            dest="color_norm",
-            action="store_false",
-            help="Disable euro-reference color normalization.",
-        )
-        parser.add_argument(
-            "--hist-norm",
-            dest="hist_norm",
-            action="store_true",
-            default=None,
-            help="Enable luminance histogram normalization (CLAHE + percentile stretch).",
-        )
-        parser.add_argument(
-            "--no-hist-norm",
-            dest="hist_norm",
-            action="store_false",
-            help="Disable luminance histogram normalization.",
         )
         parser.add_argument(
             "--debug-export-dir",
