@@ -7,6 +7,7 @@ import numpy as np
 
 
 def run_hough_with_params(blurred: np.ndarray, hough_params: dict[str, float | int]) -> np.ndarray | None:
+    """Run HoughCircles with explicit params and return integer circles."""
     circles = cv2.HoughCircles(
         blurred,
         cv2.HOUGH_GRADIENT,
@@ -23,6 +24,7 @@ def run_hough_with_params(blurred: np.ndarray, hough_params: dict[str, float | i
 
 
 def circle_nesting_score(circles_int: np.ndarray | None) -> tuple[float, dict[str, int | float]]:
+    """Geometric penalty for overlapping/nested circle detections."""
     if circles_int is None or len(circles_int) == 0:
         return 1e9, {
             "n": 0,
@@ -101,6 +103,7 @@ def auto_minradius_plateau(
     minR_end: int = 120,
     step: int = 2,
 ) -> tuple[int, dict[str, int | float | list[int] | str], list[tuple[int, dict[str, int | float]]]]:
+    """Pick `minRadius` by sweeping and selecting stable low-penalty region."""
     results: list[tuple[int, dict[str, int | float]]] = []
     for min_radius in range(minR_start, minR_end + 1, step):
         params = base_params.copy()
@@ -157,6 +160,7 @@ def auto_minradius_plateau(
 
 
 def choose_dynamic_sat_delta_threshold(sat_deltas: list[float], default: float = 18.0) -> float:
+    """Infer robust color-delta split threshold from ordered samples."""
     if sat_deltas is None:
         return float(default)
 
@@ -206,6 +210,7 @@ def choose_dynamic_sat_delta_threshold(sat_deltas: list[float], default: float =
 
 
 def radius_spread_metric(circles_int: np.ndarray | None) -> float:
+    """Normalized radius spread (IQR/median) used as consistency indicator."""
     if circles_int is None or len(circles_int) == 0:
         return 1e9
     r = circles_int[:, 2].astype(np.float32)

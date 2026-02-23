@@ -31,7 +31,11 @@ console = Console()
 
 
 class AppRunner:
+    """CLI application shell for batch processing + evaluation + viewer."""
+
     def run(self) -> None:
+        """Run full CLI flow from argument parsing to optional debug viewer."""
+        # 1) Parse runtime options and normalize convenience arguments.
         args = self.build_parser().parse_args()
         cols = max(1, args.cols)
         eval_groups = parse_eval_groups(args.eval_groups)
@@ -39,6 +43,7 @@ class AppRunner:
         if args.debug_export_dir:
             debug_export_dir = Path(args.debug_export_dir).expanduser().resolve()
 
+        # 2) Build config and validate selected detector preset.
         console.print(f"[cyan][INFO] Matplotlib backend:[/cyan] {plt.get_backend()}")
         config = PipelineConfig()
         if args.dataset_dir is not None:
@@ -49,6 +54,7 @@ class AppRunner:
             available = ", ".join(sorted(HOUGH_PRESETS))
             raise ValueError(f"Unknown preset '{preset_name}'. Available presets: {available}")
 
+        # 3) Discover input images and initialize core services.
         dataset = ImageDataset(config.dataset_dir, config.valid_extensions)
         images = dataset.list_images(limit=args.limit)
         if not images:
@@ -78,6 +84,11 @@ class AppRunner:
         main_table.add_column("V_DIFF", justify="right")
         main_table.add_column("STATUS", justify="center", style="bold")
 
+        # 4) Main processing loop:
+        #    - run pipeline
+        #    - attach debug metadata
+        #    - evaluate when GT is available
+        #    - optionally save/export artifacts
         with console.status("[bold green]Processing images and calculating metrics..."):
             for item in images:
                 try:
@@ -105,6 +116,7 @@ class AppRunner:
                 )
 
                 if eval_groups is not None and group_name not in eval_groups:
+                    # Keep prediction output but exclude from scored metrics.
                     evaluator.add_filtered_group()
                     result.debug_info["status"] = "SKIP_GROUP"
                     main_table.add_row(
@@ -114,6 +126,7 @@ class AppRunner:
                         self._save_result(result, item.relative_path, Path(args.save_dir), cols, config.viewer_final_only)
                     if debug_export_dir is not None:
                         try:
+                            # Export final-step debug even for skipped groups.
                             export_result_debug(
                                 result=result,
                                 export_root=debug_export_dir,
@@ -130,6 +143,7 @@ class AppRunner:
                 gt_entry = ground_truth.find(item.relative_path.name, group_name)
 
                 if gt_entry is None:
+                    # Missing annotation: show row for traceability, skip scoring.
                     evaluator.add_missing_ground_truth()
                     result.debug_info["status"] = "SKIP_NO_GT"
                     main_table.add_row(
@@ -146,6 +160,7 @@ class AppRunner:
                         predicted_value_cents=pred_value_cents,
                     )
 
+                    # Table representation for quick qualitative scan.
                     status_col = "[green]OK[/green]" if eval_item.is_correct else "[red]ERR[/red]"
 
                     c_diff_val = int(eval_item.diff)
@@ -189,10 +204,12 @@ class AppRunner:
                     main_table.add_row("", "", "", "", "", Text(breakdown_txt, style="dim italic"), "", "", "")
 
                 if args.save_dir:
+                    # Optional artifact: save full/final pipeline grid per image.
                     self._save_result(result, item.relative_path, Path(args.save_dir), cols, config.viewer_final_only)
 
                 if debug_export_dir is not None:
                     try:
+                        # Optional artifact: export structured debug payload per image.
                         export_result_debug(
                             result=result,
                             export_root=debug_export_dir,
@@ -207,6 +224,7 @@ class AppRunner:
 
         console.print(main_table)
 
+        # 5) Print aggregate metrics after the loop.
         summary = evaluator.summary()
         by_group = evaluator.summary_by_group()
         value_tolerance_cents = int(summary.get("value_tolerance_cents", 100))
@@ -266,6 +284,7 @@ class AppRunner:
             console.print(group_table)
             print()
 
+        # 6) Optional interactive viewer for step-by-step debugging.
         if args.no_view:
             return
         DebugViewer(
@@ -276,6 +295,7 @@ class AppRunner:
         ).show()
 
     def main(self) -> None:
+        """Compatibility alias used by `main.py`."""
         self.run()
 
     @staticmethod
@@ -286,6 +306,7 @@ class AppRunner:
         cols: int,
         final_only: bool,
     ) -> None:
+        """Persist pipeline figure for one processed image."""
         out_subdir = save_dir / relative_path.parent
         out_subdir.mkdir(parents=True, exist_ok=True)
         out_file = out_subdir / f"{relative_path.stem}_pipeline.png"
@@ -293,6 +314,7 @@ class AppRunner:
 
     @staticmethod
     def _get_value_breakdown_str(result: AnalysisResult) -> str:
+        """Format compact denomination breakdown used in table sub-rows."""
         total_cents = int(result.debug_info.get("total_cents", 0))
         counts = result.debug_info.get("value_counts", {})
         if not isinstance(counts, dict):
@@ -307,6 +329,7 @@ class AppRunner:
 
     @staticmethod
     def build_parser() -> argparse.ArgumentParser:
+        """Build CLI parser with dataset, evaluation and export options."""
         parser = argparse.ArgumentParser(
             description="Modular pipeline runner with project-style dataset loading and evaluation."
         )

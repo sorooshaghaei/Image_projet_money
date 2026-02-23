@@ -8,6 +8,7 @@ from typing import Dict, Iterable, Sequence
 
 
 def normalize_group_name(group: str) -> str:
+    """Normalize group aliases (e.g. `grp3` -> `gp3`) for robust matching."""
     cleaned = (group or "").strip().lower()
     if cleaned.startswith("grp"):
         return "gp" + cleaned[3:]
@@ -16,11 +17,15 @@ def normalize_group_name(group: str) -> str:
 
 @dataclass(frozen=True)
 class DatasetImage:
+    """Image file and path relative to dataset root."""
+
     path: Path
     relative_path: Path
 
 
 class ImageDataset:
+    """Filesystem-backed dataset browser with extension filtering."""
+
     def __init__(self, root_dir: Path, valid_extensions: Sequence[str]):
         self._root_dir = Path(root_dir)
         self._valid_extensions = {ext.lower() for ext in valid_extensions}
@@ -30,6 +35,7 @@ class ImageDataset:
         return self._root_dir
 
     def list_images(self, limit: int | None = None) -> list[DatasetImage]:
+        """Recursively list images under root, sorted by relative path."""
         if not self._root_dir.exists():
             return []
 
@@ -50,6 +56,8 @@ class ImageDataset:
 
 @dataclass(frozen=True)
 class GroundTruthEntry:
+    """One annotation row from dataset ground truth table."""
+
     filename: str
     group: str
     coin_count: int
@@ -57,6 +65,8 @@ class GroundTruthEntry:
 
 
 class GroundTruthRepository:
+    """In-memory lookup table keyed by `(group, filename)`."""
+
     def __init__(self, rows: Iterable[GroundTruthEntry] | None = None):
         entries = list(rows) if rows is not None else self._parse_default_rows()
         self._index: Dict[tuple[str, str], GroundTruthEntry] = {}
@@ -70,10 +80,12 @@ class GroundTruthRepository:
             )
 
     def find(self, filename: str, group: str) -> GroundTruthEntry | None:
+        """Find ground truth entry for an image in a normalized group."""
         key = (normalize_group_name(group), filename.lower())
         return self._index.get(key)
 
     def _parse_default_rows(self) -> list[GroundTruthEntry]:
+        """Parse bundled plain-text annotations into typed entries."""
         entries: list[GroundTruthEntry] = []
         for raw_line in RAW_ANNOTATIONS.strip().splitlines():
             line = raw_line.strip()
@@ -101,6 +113,7 @@ class GroundTruthRepository:
 
 
 def _parse_value_cents(raw: str | None) -> int | None:
+    """Parse EUR string token (comma/dot accepted) into integer cents."""
     if raw is None:
         return None
     cleaned = raw.strip().lower().replace(",", ".")

@@ -13,6 +13,8 @@ from src.dataset import GroundTruthEntry
 
 @dataclass(frozen=True)
 class EvaluationItem:
+    """One evaluated prediction aligned with one ground-truth record."""
+
     relative_path: Path
     group: str
     filename: str
@@ -55,6 +57,8 @@ class EvaluationItem:
 
 
 class Evaluator:
+    """Accumulates evaluation items and computes summary metrics."""
+
     VALUE_TOLERANCE_CENTS = 100
     VALUE_SOFT_CAP_CENTS = 400
 
@@ -83,6 +87,7 @@ class Evaluator:
         ground_truth: GroundTruthEntry,
         predicted_value_cents: int = 0,
     ) -> EvaluationItem:
+        """Register one prediction/ground-truth pair and return stored item."""
         item = EvaluationItem(
             relative_path=relative_path,
             group=group,
@@ -96,12 +101,15 @@ class Evaluator:
         return item
 
     def add_missing_ground_truth(self) -> None:
+        """Increment skip counter for samples missing annotations."""
         self._skipped_missing_ground_truth += 1
 
     def add_filtered_group(self) -> None:
+        """Increment skip counter for filtered-out groups."""
         self._skipped_filtered_group += 1
 
     def _compute_metrics(self, items: list[EvaluationItem]) -> dict[str, float | int | None]:
+        """Compute coin/value metrics for a given item subset."""
         value_tolerance_cents = int(self.VALUE_TOLERANCE_CENTS)
         value_soft_cap_cents = int(max(self.VALUE_SOFT_CAP_CENTS, value_tolerance_cents + 1))
 
@@ -198,9 +206,11 @@ class Evaluator:
         }
 
     def summary(self) -> dict[str, float | int | None]:
+        """Return global metrics over all evaluated items."""
         return self._compute_metrics(self._items)
 
     def summary_by_group(self) -> dict[str, dict[str, float | int | None]]:
+        """Return metrics grouped by dataset group id."""
         grouped: dict[str, list[EvaluationItem]] = {}
         for item in self._items:
             grouped.setdefault(item.group, []).append(item)
@@ -217,6 +227,8 @@ class Evaluation(Evaluator):
 
 @dataclass
 class PipelineStep:
+    """One visualization step image in the processing pipeline."""
+
     name: str
     image: np.ndarray
     cmap: str
@@ -224,6 +236,8 @@ class PipelineStep:
 
 @dataclass
 class AnalysisResult:
+    """Final per-image pipeline result used by runner and viewer."""
+
     source_path: Path
     steps: list[PipelineStep]
     circle_count: int

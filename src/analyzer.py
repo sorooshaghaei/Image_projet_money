@@ -59,17 +59,22 @@ class Analyzer:
         )
 
     def analyze_path(self, image_path: Path) -> AnalysisResult:
+        """Load image from disk and run full pipeline."""
         image_bgr = read_bgr_or_raise(image_path)
         return self.analyze(image_bgr, image_path)
 
     def analyze(self, image_bgr: np.ndarray, source_path: Path) -> AnalysisResult:
+        """Alias for `process_image` kept for compatibility."""
         return self.process_image(image_bgr, source_path)
 
     def process_path(self, image_path: Path) -> AnalysisResult:
+        """Path-based processing entrypoint used by the runner."""
         image_bgr = read_bgr_or_raise(image_path)
         return self.process_image(image_bgr, image_path)
 
     def process_image(self, image_bgr: np.ndarray, source_path: Path) -> AnalysisResult:
+        """Execute preprocessing -> detection -> value estimation pipeline."""
+        # Normalize input geometry so downstream thresholds stay consistent.
         image_bgr = letterbox_resize_to_canvas(
             image_bgr,
             self._cfg.target_width,
@@ -77,6 +82,7 @@ class Analyzer:
         )
 
         prep = self._preprocessing.process(image_bgr)
+        # Detection blur can be tuned independently from preprocessing output.
         detection_gray = cv2.cvtColor(prep.image_bgr, cv2.COLOR_BGR2GRAY)
         ksize = normalize_odd_ksize(self._cfg.gauss_ksize)
         if self._cfg.blur_mode == "gauss":
@@ -84,10 +90,13 @@ class Analyzer:
         else:
             detection_blurred = detection_gray if ksize <= 1 else cv2.medianBlur(detection_gray, ksize)
 
+        # Stage A: circle localization (Hough + adaptive min-radius sweep).
         detection = self._detector.detect(detection_gray, detection_blurred, prep.image_rgb)
+        # Stage B: per-coin color split + denomination inference.
         valuation = self._value_estimator.estimate(prep.image_bgr, detection.circles)
 
         value_counts = valuation.counts if len(valuation.counts) > 0 else {d: 0 for d in ValueEstimator.DENOM_PRINT_ORDER}
+        # Ordered pipeline steps are consumed by the interactive viewer/exporter.
         steps = [
             PipelineStep("Original (Letterbox 640x480)", prep.image_rgb, "rgb"),
             PipelineStep("Grayscale", prep.gray, "gray"),
@@ -96,6 +105,7 @@ class Analyzer:
             PipelineStep("Inner/Border Mean Color Analysis", valuation.split_rgb, "rgb"),
             PipelineStep("Coin Value Estimation", valuation.value_labeled_rgb, "rgb"),
         ]
+        # Debug payload is intentionally rich for viewer/export tooling.
         debug_info = {
             "preset": self._preset_name,
             "plateau_debug": detection.sweep_debug,

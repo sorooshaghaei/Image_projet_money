@@ -17,6 +17,7 @@ from src.models import AnalysisResult
 
 
 def _module_available(module_name: str) -> bool:
+    """Return whether a Python module can be imported."""
     try:
         __import__(module_name)
     except Exception:
@@ -25,6 +26,7 @@ def _module_available(module_name: str) -> bool:
 
 
 def _configure_matplotlib_backend() -> str:
+    """Select best available backend with safe headless fallback."""
     current_backend = str(matplotlib.get_backend()).strip().lower()
     if current_backend and current_backend not in {"agg", "cairo", "pdf", "pgf", "ps", "svg", "template"}:
         if not current_backend.startswith("module://matplotlib_inline"):
@@ -61,6 +63,7 @@ import matplotlib.pyplot as plt
 
 
 def read_bgr_or_raise(image_path: Path) -> np.ndarray:
+    """Read image with OpenCV and raise explicit error if loading fails."""
     image_bgr = cv2.imread(str(image_path))
     if image_bgr is None:
         raise FileNotFoundError(f"Could not read image at {image_path.resolve()}")
@@ -68,6 +71,7 @@ def read_bgr_or_raise(image_path: Path) -> np.ndarray:
 
 
 def letterbox_resize_to_canvas(image_bgr: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+    """Resize with aspect-ratio preservation and pad onto fixed canvas."""
     height, width = image_bgr.shape[:2]
     if height <= 0 or width <= 0:
         raise ValueError("Input image has invalid dimensions")
@@ -87,6 +91,7 @@ def letterbox_resize_to_canvas(image_bgr: np.ndarray, target_w: int, target_h: i
 
 
 def is_non_interactive_backend(backend_name: str) -> bool:
+    """Check whether Matplotlib backend cannot open interactive windows."""
     backend = str(backend_name).strip().lower()
     if backend.startswith("module://matplotlib_inline"):
         return True
@@ -104,6 +109,7 @@ def is_non_interactive_backend(backend_name: str) -> bool:
 
 
 def to_serializable(value: Any) -> Any:
+    """Convert nested runtime objects into JSON-safe structures."""
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Path):
@@ -133,6 +139,7 @@ def build_debug_dump_payload(
     final_only: bool = False,
     panel_text: str | None = None,
 ) -> dict[str, Any]:
+    """Build structured debug payload for export/viewer snapshots."""
     steps = result.steps[-1:] if final_only else result.steps
     step_count = len(steps)
     clamped_step_index = 0
@@ -209,6 +216,7 @@ def export_result_debug(
     final_only: bool = False,
     panel_text: str | None = None,
 ) -> tuple[Path, Path]:
+    """Export debug payload as `.json` plus human-readable `.txt` snapshot."""
     payload = build_debug_dump_payload(
         result=result,
         step_index=step_index,
@@ -247,6 +255,7 @@ def save_pipeline_figure(
     cols: int = 3,
     final_only: bool = False,
 ) -> None:
+    """Save full (or final-only) pipeline panel grid as one image file."""
     cols = max(1, int(cols))
     rows = 1 if final_only else max(1, ceil(max(1, len(result.steps)) / cols))
     fig, axes = plt.subplots(rows, cols, figsize=(4.4 * cols, 3.7 * rows))

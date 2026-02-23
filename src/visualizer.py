@@ -20,6 +20,8 @@ console = Console()
 
 
 class DebugViewer:
+    """Interactive Matplotlib viewer for per-image pipeline debugging."""
+
     def __init__(
         self,
         results: list[AnalysisResult],
@@ -38,6 +40,7 @@ class DebugViewer:
         self._debug_export_dir = Path(debug_export_dir) if debug_export_dir is not None else Path.cwd() / "debug_exports"
 
     def show(self) -> None:
+        """Open interactive window and attach keyboard navigation handlers."""
         if not self._results:
             console.print("[yellow][WARN] No pipeline results to display.[/yellow]")
             return
@@ -56,6 +59,7 @@ class DebugViewer:
             )
 
         try:
+            # Two-panel layout: left image, right textual diagnostics.
             self._fig = plt.figure(figsize=(16, 9))
             grid = self._fig.add_gridspec(
                 1,
@@ -79,6 +83,7 @@ class DebugViewer:
         plt.show()
 
     def _on_key(self, event) -> None:
+        """Keyboard controls for navigation/export/toggle modes."""
         if event.key in ("right", "d", "n", " "):
             self._idx = (self._idx + 1) % len(self._results)
             self._render()
@@ -101,6 +106,7 @@ class DebugViewer:
             plt.close(self._fig)
 
     def _render(self) -> None:
+        """Render current image step + right panel metadata block."""
         result = self._results[self._idx]
         steps = result.steps[-1:] if self._final_only else result.steps
         if not steps:
@@ -153,6 +159,7 @@ class DebugViewer:
         self._fig.canvas.draw_idle()
 
     def _export_current_debug(self) -> None:
+        """Export current viewer state as structured debug artifacts."""
         if not self._results:
             return
         result = self._results[self._idx]
@@ -179,6 +186,7 @@ class DebugViewer:
         console.print(f"[green][INFO] Text snapshot:[/green] {text_path}")
 
     def _build_info_panel_text(self, result: AnalysisResult, step: PipelineStep, step_count: int) -> str:
+        """Build monospaced right-panel diagnostic text block."""
         info = result.debug_info
 
         relative_path = str(info.get("relative_path", result.source_path.name))

@@ -8,6 +8,8 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class HoughPreset:
+    """OpenCV HoughCircles parameter subset used by this pipeline."""
+
     dp: float
     min_dist: int
     param2: int
@@ -21,11 +23,14 @@ HOUGH_PRESETS: dict[str, HoughPreset] = {
 
 
 def default_dataset_dir() -> Path:
+    """Resolve the default dataset folder relative to repository root."""
     return Path(__file__).resolve().parent.parent / "data" / "images"
 
 
 @dataclass(frozen=True)
 class PipelineConfig:
+    """Single source of runtime defaults for preprocessing/detection/analysis."""
+
     dataset_dir: Path = field(default_factory=default_dataset_dir)
     valid_extensions: tuple[str, ...] = (
         ".jpg",
@@ -78,6 +83,7 @@ class PipelineConfig:
     viewer_final_only: bool = True
 
     def get_preset(self, preset_name: str | None = None) -> HoughPreset:
+        """Return validated Hough preset by name (or active default)."""
         key = preset_name or self.active_preset
         if key not in HOUGH_PRESETS:
             available = ", ".join(sorted(HOUGH_PRESETS))

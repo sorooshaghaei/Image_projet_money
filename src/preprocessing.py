@@ -11,6 +11,8 @@ import numpy as np
 
 @dataclass(frozen=True)
 class PreprocessingResult:
+    """Outputs of the preprocessing stage used by downstream detectors."""
+
     image_bgr: np.ndarray
     image_rgb: np.ndarray
     hist_norm_bgr: np.ndarray
@@ -23,6 +25,12 @@ class PreprocessingResult:
 
 
 class ImagePreprocessing:
+    """Configurable preprocessing pipeline.
+
+    The current stage keeps histogram/CLAHE placeholders for compatibility
+    while using grayscale + blur as the effective detector input.
+    """
+
     def __init__(
         self,
         clahe_enabled: bool = False,
@@ -49,9 +57,11 @@ class ImagePreprocessing:
 
     @property
     def blur_step_name(self) -> str:
+        """Human-friendly blur stage label for UI/debug panels."""
         return "Gaussian Blur" if self._blur_mode == "gauss" else "Median Blur"
 
     def process(self, image_bgr: np.ndarray) -> PreprocessingResult:
+        """Run preprocessing and return all intermediate tensors."""
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
         hist_norm_bgr = image_bgr
@@ -81,6 +91,7 @@ class ImagePreprocessing:
 
 
 def normalize_blur_mode(mode: str) -> str:
+    """Normalize and validate user blur mode configuration."""
     normalized = str(mode).strip().lower()
     if normalized in {"gauss", "gaussian"}:
         return "gauss"
@@ -90,6 +101,7 @@ def normalize_blur_mode(mode: str) -> str:
 
 
 def normalize_odd_ksize(ksize: int) -> int:
+    """Ensure OpenCV kernel size is positive odd integer."""
     k = int(ksize)
     if k < 1:
         k = 1
@@ -103,6 +115,13 @@ def auto_hough_param1_from_gradient(
     scale: float = 1.0,
     clamp: tuple[int, int] = (20, 250),
 ) -> int:
+    """Estimate Hough `param1` from Scharr gradient magnitude distribution.
+
+    Steps:
+    1. Optional pre-blur.
+    2. Scharr derivatives + magnitude.
+    3. Percentile-based threshold with scale and clamp.
+    """
     if gray_u8.ndim != 2:
         raise ValueError("Expected a 2D grayscale image")
     if gray_u8.dtype != np.uint8:
