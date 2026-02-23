@@ -103,8 +103,38 @@ def auto_minradius_plateau(
     minR_end: int = 120,
     step: int = 2,
 ) -> tuple[int, dict[str, int | float | list[int] | str], list[tuple[int, dict[str, int | float]]]]:
-    """Pick `minRadius` by sweeping and selecting stable low-penalty region."""
+    """Pick a robust Hough `minRadius` via sweep + stability voting.
+
+    Why this exists
+    ---------------
+    `minRadius` is one of the most sensitive Hough parameters:
+    - too small -> many duplicate/nested detections,
+    - too large -> small valid coins disappear.
+
+    Instead of fixing one value globally, we sweep a radius range and score each
+    result with `circle_nesting_score`, then select a *stable* region.
+
+    Selection policy
+    ----------------
+    1. Evaluate every candidate `minRadius` in `[minR_start, minR_end]`.
+    2. Keep only geometrically clean results:
+       - `nested_pairs == 0`
+       - `max_intrusions_in_one == 0`
+    3. If no clean result exists, fall back to a least-bad compromise by:
+       - minimizing nested pairs,
+       - then minimizing intrusions,
+       - then maximizing detected count `n`,
+       - and finally choosing the median radius among ties.
+    4. If clean results exist, group by detected count `n`, choose the modal
+       count (prefer larger `n` on ties), then take the median radius in that
+       group.
+
+    The median tie-break is intentional: it avoids edge-of-range picks and
+    favors parameter values in the middle of stable plateaus.
+    """
     results: list[tuple[int, dict[str, int | float]]] = []
+
+    # Phase 1: sweep `minRadius` and collect geometric quality metrics.
     for min_radius in range(minR_start, minR_end + 1, step):
         params = base_params.copy()
         params["minRadius"] = int(min_radius)
@@ -112,22 +142,32 @@ def auto_minradius_plateau(
         _, metrics = circle_nesting_score(circles_int)
         results.append((min_radius, metrics))
 
+    # Phase 2: keep only clean candidates (no nesting, no severe intrusions).
     good = [
         (min_radius, metrics)
         for (min_radius, metrics) in results
         if metrics["nested_pairs"] == 0 and metrics["max_intrusions_in_one"] == 0
     ]
+
+    # Fallback path when *all* candidates are imperfect.
     if len(good) == 0:
+        # First objective: minimize nesting artefacts.
         best_nested = min(int(metrics["nested_pairs"]) for (_, metrics) in results)
         candidates = [(min_radius, metrics) for (min_radius, metrics) in results if int(metrics["nested_pairs"]) == best_nested]
+
+        # Second objective: minimize heavy intrusions.
         best_intrusions = min(int(metrics["max_intrusions_in_one"]) for (_, metrics) in candidates)
         candidates = [
             (min_radius, metrics)
             for (min_radius, metrics) in candidates
             if int(metrics["max_intrusions_in_one"]) == best_intrusions
         ]
+
+        # Third objective: among similarly clean candidates, keep more detections.
         best_n = max(int(metrics["n"]) for (_, metrics) in candidates)
         min_radius_list = sorted(min_radius for (min_radius, metrics) in candidates if int(metrics["n"]) == best_n)
+
+        # Final tie-break: middle value for plateau robustness.
         chosen = min_radius_list[len(min_radius_list) // 2]
         return chosen, {
             "reason": "no_good_results",
@@ -136,19 +176,24 @@ def auto_minradius_plateau(
             "best_n": best_n,
         }, results
 
+    # Main path: analyze stable clean regions by detected-count frequency.
     n_to_min_radius: dict[int, list[int]] = {}
     for min_radius, metrics in good:
         n = int(metrics["n"])
         n_to_min_radius.setdefault(n, []).append(int(min_radius))
 
+    # Prefer positive counts when available; otherwise allow zero-only plateaus.
     positive_counts = {n: values for n, values in n_to_min_radius.items() if n > 0}
     selected_counts = positive_counts if len(positive_counts) > 0 else n_to_min_radius
 
+    # Mode of count-frequency: choose the count that remains valid longest
+    # across the sweep; prefer higher count in case of equal frequency.
     counts = [(n, len(values)) for n, values in selected_counts.items()]
     max_frequency = max(freq for _, freq in counts)
     n_candidates = [n for n, freq in counts if freq == max_frequency]
     n_mode = max(n_candidates)
 
+    # Final robust pick inside the selected plateau.
     min_radius_candidates = sorted(selected_counts[n_mode])
     chosen_min_radius = min_radius_candidates[len(min_radius_candidates) // 2]
 
