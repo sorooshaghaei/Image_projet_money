@@ -770,22 +770,23 @@ def draw_and_analyze_circle_inner_border_colors(
 
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     gray_shape = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    circles_int = np.round(circles[0, :]).astype(int)
+    circles_float = np.asarray(circles[0, :], dtype=np.float32)
     h_img, w_img = image_bgr.shape[:2]
 
     rows: list[dict] = []
     color_deltas_hybrid: list[float] = []
 
-    for idx, (x, y, r) in enumerate(circles_int):
-        x = int(x)
-        y = int(y)
-        r = int(max(1, r))
+    for idx, (x_raw, y_raw, r_raw) in enumerate(circles_float):
+        x = int(round(float(x_raw)))
+        y = int(round(float(y_raw)))
+        r = float(max(1.0, float(r_raw)))
+        r_draw = int(max(1, round(r)))
         inner_r = int(max(1, round(r * (1.0 - border_ratio))))
-        split_radius = float(inner_r) / float(r)
+        split_radius = float(inner_r) / max(float(r_draw), 1.0)
 
         outer_mask = np.zeros((h_img, w_img), dtype=np.uint8)
         inner_mask = np.zeros((h_img, w_img), dtype=np.uint8)
-        cv2.circle(outer_mask, (x, y), r, 255, -1)
+        cv2.circle(outer_mask, (x, y), r_draw, 255, -1)
         cv2.circle(inner_mask, (x, y), inner_r, 255, -1)
         border_mask = cv2.bitwise_and(outer_mask, cv2.bitwise_not(inner_mask))
 
@@ -814,7 +815,7 @@ def draw_and_analyze_circle_inner_border_colors(
         if len(xs) > 0:
             radial_norm = (
                 np.sqrt((xs.astype(np.float32) - float(x)) ** 2 + (ys.astype(np.float32) - float(y)) ** 2)
-                / float(r)
+                / max(float(r_draw), 1e-6)
             )
             radial_norm = np.clip(radial_norm, 0.0, 1.0)
             coin_hsv = hsv[ys, xs]
@@ -824,13 +825,14 @@ def draw_and_analyze_circle_inner_border_colors(
             radial_kmeans = {"ok": False, "score": 0.0, "radial_sep": 0.0, "agreement": 0.0, "balance": 0.0}
             radial_step = {"ok": False, "score": 0.0, "max_step": 0.0, "step_radius": split_radius}
 
-        edge_shape = coin_edge_roughness_score(gray_shape, x=x, y=y, r=r, n_bins=72)
+        edge_shape = coin_edge_roughness_score(gray_shape, x=x, y=y, r=r_draw, n_bins=72)
         rows.append(
             {
                 "id": idx,
                 "x": x,
                 "y": y,
-                "r": r,
+                "r": int(r_draw),
+                "r_subpx": float(r),
                 "inner_r": inner_r,
                 "full_hsv": full_hsv,
                 "inner_hsv": inner_hsv,
@@ -878,6 +880,7 @@ def draw_and_analyze_circle_inner_border_colors(
         y = row["y"]
         r = row["r"]
         inner_r = row["inner_r"]
+        r_draw = int(max(1, int(r)))
         full_hsv = row["full_hsv"]
         inner_hsv = row["inner_hsv"]
         border_hsv = row["border_hsv"]
@@ -1021,12 +1024,12 @@ def draw_and_analyze_circle_inner_border_colors(
         border_bgr = cv2.cvtColor(np.uint8([[[*border_hsv]]]), cv2.COLOR_HSV2BGR)[0, 0]
 
         if detector_type == "bi-metal-like":
-            cv2.circle(output_bgr, (x, y), r, tuple(int(c) for c in border_bgr), -1)
+            cv2.circle(output_bgr, (x, y), r_draw, tuple(int(c) for c in border_bgr), -1)
             cv2.circle(output_bgr, (x, y), inner_r, tuple(int(c) for c in inner_bgr), -1)
         else:
-            cv2.circle(output_bgr, (x, y), r, tuple(int(c) for c in full_bgr), -1)
+            cv2.circle(output_bgr, (x, y), r_draw, tuple(int(c) for c in full_bgr), -1)
 
-        cv2.circle(output_bgr, (x, y), r, (0, 0, 0), 2)
+        cv2.circle(output_bgr, (x, y), r_draw, (0, 0, 0), 2)
         if detector_type == "bi-metal-like":
             cv2.circle(output_bgr, (x, y), inner_r, (0, 0, 0), 2)
 
@@ -1384,7 +1387,7 @@ class ValueEstimator:
     def _estimate_scale_from_all_radii_voting(cls, rows: list[dict]) -> tuple[float | None, dict]:
         scale_candidates: list[float] = []
         for row in rows:
-            r_px = float(max(1, int(row.get("r", 1))))
+            r_px = float(max(1.0, float(row.get("r_subpx", row.get("r", 1.0)))))
             family = cls.coin_family_from_row(row)
             denom_pool = cls.FAMILY_TO_DENOMS.get(family, cls.FAMILY_TO_DENOMS["unknown"])
             for denom in denom_pool:
@@ -1416,14 +1419,44 @@ class ValueEstimator:
                 denom = "2e"
             else:
                 continue
-            r_px = float(max(1, int(row.get("r", 1))))
+            r_px = float(max(1.0, float(row.get("r_subpx", row.get("r", 1.0)))))
             ref_scales.append((2.0 * r_px) / cls.EURO_DIAMETER_MM[denom])
 
         fallback_scale, fallback_dbg = cls._estimate_scale_from_all_radii_voting(rows)
         if len(ref_scales) >= 2:
-            return float(np.median(np.asarray(ref_scales, dtype=np.float64))), {
+            ref_arr = np.asarray(ref_scales, dtype=np.float64)
+            ref_med = float(np.median(ref_arr))
+            ref_mad = float(np.median(np.abs(ref_arr - ref_med)))
+            if ref_mad > 1e-6:
+                keep_mask = np.abs(ref_arr - ref_med) <= (2.0 * ref_mad + 0.10)
+                kept = ref_arr[keep_mask]
+                if kept.size > 0:
+                    ref_med = float(np.median(kept))
+                kept_count = int(kept.size)
+            else:
+                kept_count = int(ref_arr.size)
+
+            if fallback_scale is not None:
+                rel_gap = abs(ref_med - float(fallback_scale)) / max(ref_med, 1e-6)
+                if rel_gap >= 0.04:
+                    blend_w_ref = 0.80
+                    blended = float(blend_w_ref * ref_med + (1.0 - blend_w_ref) * float(fallback_scale))
+                    return blended, {
+                        "method": "bimetal_reference_blend",
+                        "count": int(len(ref_scales)),
+                        "kept_count": kept_count,
+                        "raw_scales": [float(x) for x in ref_scales],
+                        "ref_median": float(ref_med),
+                        "fallback_scale": float(fallback_scale),
+                        "blend_w_ref": float(blend_w_ref),
+                        "relative_gap": float(rel_gap),
+                        **fallback_dbg,
+                    }
+
+            return float(ref_med), {
                 "method": "bimetal_reference",
                 "count": int(len(ref_scales)),
+                "kept_count": kept_count,
                 "raw_scales": [float(x) for x in ref_scales],
             }
         if len(ref_scales) == 1:
