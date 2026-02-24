@@ -21,15 +21,8 @@ from src.common.formatters import (
 from src.common.plotting import plt, save_pipeline_figure
 from src.data.dataset import ImageDataset
 from src.data.ground_truth import GroundTruthRepository
-from src.evaluation.difficulty import (
-    MEDIUM_MAX_COIN_ABS_DIFF_DEFAULT,
-    MEDIUM_MAX_VALUE_ABS_DIFF_CENTS_DEFAULT,
-    build_difficulty_stats,
-    classify_difficulty,
-    format_difficulty_label,
-)
-from src.evaluation.metrics import Evaluation, EvaluationItem
-from src.evaluation.reporting import write_difficulty_report, write_json
+from src.evaluation.metrics import Evaluation
+from src.evaluation.reporting import write_evaluation_report
 from src.pipeline.config import HOUGH_PRESETS, PipelineConfig
 from src.pipeline.models import AnalysisResult
 from src.pipeline.orchestrator import Analyzer
@@ -41,16 +34,11 @@ console = Console()
 class AppRunner:
     """CLI application shell for batch processing + evaluation + viewer."""
 
-    MEDIUM_MAX_COIN_ABS_DIFF = MEDIUM_MAX_COIN_ABS_DIFF_DEFAULT
-    MEDIUM_MAX_VALUE_ABS_DIFF_CENTS = MEDIUM_MAX_VALUE_ABS_DIFF_CENTS_DEFAULT
-
     def run(self) -> None:
         """Run full CLI flow from argument parsing to optional debug viewer."""
         args = self.build_parser().parse_args()
         cols = max(1, args.cols)
         eval_groups = parse_eval_groups(args.eval_groups)
-        medium_max_coin_abs_diff = max(0, int(args.medium_max_coin_diff))
-        medium_max_value_abs_diff_cents = max(0, int(args.medium_max_value_diff_cents))
         debug_export_dir = None
         if args.debug_export_dir:
             debug_export_dir = Path(args.debug_export_dir).expanduser().resolve()
@@ -91,7 +79,7 @@ class AppRunner:
         evaluator = Evaluation()
         ground_truth = GroundTruthRepository()
         results: list[AnalysisResult] = []
-        label_rows: list[dict[str, Any]] = []
+        evaluation_rows: list[dict[str, Any]] = []
 
         if filtered_out_count > 0:
             for _ in range(filtered_out_count):
@@ -113,7 +101,6 @@ class AppRunner:
         main_table.add_column("V_PRED", justify="right", style="cyan", width=8, no_wrap=True)
         main_table.add_column("V_TRUE", justify="right", style="cyan", width=8, no_wrap=True)
         main_table.add_column("V_DIFF", justify="right", width=9, no_wrap=True)
-        main_table.add_column("LEVEL", justify="center", width=8, no_wrap=True)
         main_table.add_column("STATUS", justify="center", style="bold", width=10, no_wrap=True)
 
         with console.status("[bold green]Processing images and calculating metrics..."):
@@ -138,7 +125,6 @@ class AppRunner:
                         "true_value_cents": None,
                         "coin_diff": None,
                         "value_diff_cents": None,
-                        "difficulty": None,
                         "status": "PREDICTED_ONLY",
                     }
                 )
@@ -148,12 +134,11 @@ class AppRunner:
                 if gt_entry is None:
                     evaluator.add_missing_ground_truth()
                     result.debug_info["status"] = "SKIP_NO_GT"
-                    label_rows.append(
+                    evaluation_rows.append(
                         {
                             "file": str(item.relative_path),
                             "group": group_name,
                             "status": "SKIP_NO_GT",
-                            "difficulty": "unscored",
                             "coin_pred": int(result.circle_count),
                             "coin_true": None,
                             "coin_diff": None,
@@ -173,7 +158,6 @@ class AppRunner:
                         format_cents_compact(pred_value_cents),
                         "-",
                         "-",
-                        "-",
                         "[yellow]SKIP_NO_GT[/yellow]",
                     )
                 else:
@@ -184,14 +168,8 @@ class AppRunner:
                         ground_truth=gt_entry,
                         predicted_value_cents=pred_value_cents,
                     )
-                    difficulty_label = classify_difficulty(
-                        eval_item,
-                        medium_max_coin_abs_diff=medium_max_coin_abs_diff,
-                        medium_max_value_abs_diff_cents=medium_max_value_abs_diff_cents,
-                    )
 
                     status_col = "[green]OK[/green]" if eval_item.is_correct else "[red]ERR[/red]"
-                    level_col = format_difficulty_label(difficulty_label)
 
                     c_diff_val = int(eval_item.diff)
                     c_diff_txt = str(c_diff_val) if c_diff_val == 0 else f"[red]{c_diff_val}[/red]"
@@ -218,16 +196,14 @@ class AppRunner:
                             "value_diff_cents": None
                             if eval_item.value_diff_cents is None
                             else int(eval_item.value_diff_cents),
-                            "difficulty": difficulty_label,
                             "status": "OK" if eval_item.is_correct else "ERR",
                         }
                     )
-                    label_rows.append(
+                    evaluation_rows.append(
                         {
                             "file": str(item.relative_path),
                             "group": group_name,
                             "status": "OK" if eval_item.is_correct else "ERR",
-                            "difficulty": difficulty_label,
                             "coin_pred": int(eval_item.predicted),
                             "coin_true": int(eval_item.expected),
                             "coin_diff": int(eval_item.diff),
@@ -254,7 +230,6 @@ class AppRunner:
                         pred_value_txt,
                         true_value_txt,
                         diff_txt,
-                        level_col,
                         status_col,
                     )
 
@@ -277,11 +252,8 @@ class AppRunner:
 
         console.print(main_table)
 
-        report_path = Path(args.difficulty_report).expanduser().resolve()
-        stats_path = report_path.with_suffix(".stats.json")
-        write_difficulty_report(label_rows, report_path)
-        difficulty_stats = build_difficulty_stats(label_rows)
-        write_json(difficulty_stats, stats_path)
+        report_path = Path(args.evaluation_report).expanduser().resolve()
+        write_evaluation_report(evaluation_rows, report_path)
 
         summary = evaluator.summary()
         by_group = evaluator.summary_by_group()
@@ -323,24 +295,7 @@ class AppRunner:
         )
         console.print(value_metrics_table)
 
-        difficulty_table = Table(title="Difficulty Labels", show_header=True, box=box.ROUNDED, expand=False)
-        difficulty_table.add_column("LABEL", style="bold")
-        difficulty_table.add_column("COUNT", justify="right")
-        difficulty_table.add_column("SHARE", justify="right")
-        difficulty_table.add_column("AVG |C_DIFF|", justify="right")
-        difficulty_table.add_column("AVG |V_DIFF| (EUR)", justify="right")
-        for label in ("easy", "medium", "hard"):
-            row = difficulty_stats["overall"].get(label, {})
-            difficulty_table.add_row(
-                label.upper(),
-                str(int(row.get("count", 0))),
-                f"{float(row.get('share_pct', 0.0)):.2f}%",
-                f"{float(row.get('avg_coin_abs_diff', 0.0)):.2f}",
-                f"{float(row.get('avg_value_abs_diff_eur', 0.0)):.2f}",
-            )
-        console.print(difficulty_table)
-        console.print(f"[dim]Saved difficulty labels:[/dim] {report_path}")
-        console.print(f"[dim]Saved difficulty stats:[/dim] {stats_path}")
+        console.print(f"[dim]Saved per-image evaluation report:[/dim] {report_path}")
         print()
 
         if by_group:
@@ -370,27 +325,6 @@ class AppRunner:
                 )
             console.print(group_table)
 
-            difficulty_group_table = Table(
-                show_header=True,
-                header_style="bold cyan",
-                title="Difficulty By Group",
-                box=box.SIMPLE_HEAVY,
-            )
-            difficulty_group_table.add_column("GROUP")
-            difficulty_group_table.add_column("EASY", justify="right")
-            difficulty_group_table.add_column("MED", justify="right")
-            difficulty_group_table.add_column("HARD", justify="right")
-            difficulty_group_table.add_column("HARD %", justify="right")
-            for group in sorted(difficulty_stats["by_group"]):
-                row = difficulty_stats["by_group"][group]
-                difficulty_group_table.add_row(
-                    group,
-                    str(int(row.get("easy", 0))),
-                    str(int(row.get("medium", 0))),
-                    str(int(row.get("hard", 0))),
-                    f"{float(row.get('hard_share_pct', 0.0)):.2f}%",
-                )
-            console.print(difficulty_group_table)
             print()
 
         if args.no_view:
@@ -454,22 +388,10 @@ class AppRunner:
             ),
         )
         parser.add_argument(
-            "--difficulty-report",
+            "--evaluation-report",
             type=str,
-            default="reports/difficulty_labels.csv",
-            help="CSV path where per-image difficulty labels are saved.",
-        )
-        parser.add_argument(
-            "--medium-max-coin-diff",
-            type=int,
-            default=AppRunner.MEDIUM_MAX_COIN_ABS_DIFF,
-            help="Max absolute coin count error to classify as MEDIUM.",
-        )
-        parser.add_argument(
-            "--medium-max-value-diff-cents",
-            type=int,
-            default=AppRunner.MEDIUM_MAX_VALUE_ABS_DIFF_CENTS,
-            help="Max absolute value error (in cents) to classify as MEDIUM.",
+            default="reports/evaluation_rows.csv",
+            help="CSV path where per-image evaluation rows are saved.",
         )
         return parser
 
