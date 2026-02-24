@@ -102,7 +102,7 @@ class Evaluator:
         """Increment skip counter for filtered-out groups."""
         self._skipped_filtered_group += 1
 
-    def _compute_metrics(self, items: list[EvaluationItem]) -> dict[str, float | int | None]:
+    def _compute_metrics(self, items: list[EvaluationItem]) -> dict[str, float | int]:
         """Compute coin/value metrics for a given item subset."""
         if not items:
             return {
@@ -117,9 +117,6 @@ class Evaluator:
                 "value_mse_eur2": 0.0,
                 "value_total_abs_error_cents": 0,
                 "value_total_sq_error_cents2": 0.0,
-                "mae": None,
-                "mse": None,
-                "total_abs_error": 0,
             }
 
         evaluated = len(items)
@@ -148,22 +145,19 @@ class Evaluator:
             "value_mse_eur2": value_mse_eur2,
             "value_total_abs_error_cents": value_total_abs_error_cents,
             "value_total_sq_error_cents2": value_total_sq_error_cents2,
-            "mae": None,
-            "mse": None,
-            "total_abs_error": coin_total_abs_error,
         }
 
-    def summary(self) -> dict[str, float | int | None]:
+    def summary(self) -> dict[str, float | int]:
         """Return global metrics over all evaluated items."""
         return self._compute_metrics(self._items)
 
-    def summary_by_group(self) -> dict[str, dict[str, float | int | None]]:
+    def summary_by_group(self) -> dict[str, dict[str, float | int]]:
         """Return metrics grouped by dataset group id."""
         grouped: dict[str, list[EvaluationItem]] = {}
         for item in self._items:
             grouped.setdefault(item.group, []).append(item)
 
-        out: dict[str, dict[str, float | int | None]] = {}
+        out: dict[str, dict[str, float | int]] = {}
         for group, items in grouped.items():
             out[group] = self._compute_metrics(items)
         return out
