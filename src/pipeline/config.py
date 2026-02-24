@@ -45,15 +45,6 @@ class PipelineConfig:
     target_width: int = 640
     target_height: int = 480
 
-    clahe_enabled: bool = False
-    clahe_clip_limit: float = 2.0
-    clahe_tile_grid_size: tuple[int, int] = (8, 8)
-
-    histogram_normalization_enabled: bool = False
-    histogram_clip_limit: float = 2.2
-    histogram_tile_grid_size: tuple[int, int] = (8, 8)
-    histogram_stretch_percentiles: tuple[float, float] = (1.0, 99.0)
-
     blur_mode: str = "gauss"
     gauss_ksize: int = 5
     gauss_sigma: float = 2.0

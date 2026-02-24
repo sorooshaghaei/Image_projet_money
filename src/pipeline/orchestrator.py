@@ -20,17 +20,9 @@ class Analyzer:
     def __init__(self, config: PipelineConfig, preset_name: str | None = None):
         self._cfg = config
         self._preset_name = preset_name or config.active_preset
-        self._clahe_enabled = bool(config.clahe_enabled)
         preset = config.get_preset(self._preset_name)
 
         self._preprocessing = ImagePreprocessing(
-            clahe_enabled=self._clahe_enabled,
-            clahe_clip_limit=config.clahe_clip_limit,
-            clahe_tile_grid_size=config.clahe_tile_grid_size,
-            histogram_normalization_enabled=config.histogram_normalization_enabled,
-            histogram_clip_limit=config.histogram_clip_limit,
-            histogram_tile_grid_size=config.histogram_tile_grid_size,
-            histogram_stretch_percentiles=config.histogram_stretch_percentiles,
             blur_mode=config.blur_mode,
             gauss_ksize=config.gauss_ksize,
             gauss_sigma=config.gauss_sigma,
@@ -110,10 +102,7 @@ class Analyzer:
             "preset": self._preset_name,
             "plateau_debug": detection.sweep_debug,
             "sweep_results": detection.sweep_results,
-            "clahe_enabled": self._clahe_enabled,
             "blur_mode": self._cfg.blur_mode,
-            "histogram_normalization_enabled": False,
-            "hist_norm_debug": prep.hist_norm_debug,
             "valuation_input_stage": "image_bgr",
             "split_stats": valuation.split_stats,
             "value_predictions": valuation.predictions,
