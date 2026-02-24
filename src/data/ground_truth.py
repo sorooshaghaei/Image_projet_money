@@ -1,57 +1,11 @@
-"""Dataset listing and ground-truth repository."""
+"""Ground-truth repository and parsing logic."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, Iterable, Sequence
+from typing import Iterable
 
-
-def normalize_group_name(group: str) -> str:
-    """Normalize group aliases (e.g. `grp3` -> `gp3`) for robust matching."""
-    cleaned = (group or "").strip().lower()
-    if cleaned.startswith("grp"):
-        return "gp" + cleaned[3:]
-    return cleaned
-
-
-@dataclass(frozen=True)
-class DatasetImage:
-    """Image file and path relative to dataset root."""
-
-    path: Path
-    relative_path: Path
-
-
-class ImageDataset:
-    """Filesystem-backed dataset browser with extension filtering."""
-
-    def __init__(self, root_dir: Path, valid_extensions: Sequence[str]):
-        self._root_dir = Path(root_dir)
-        self._valid_extensions = {ext.lower() for ext in valid_extensions}
-
-    @property
-    def root_dir(self) -> Path:
-        return self._root_dir
-
-    def list_images(self, limit: int | None = None) -> list[DatasetImage]:
-        """Recursively list images under root, sorted by relative path."""
-        if not self._root_dir.exists():
-            return []
-
-        images: list[DatasetImage] = []
-        for path in self._root_dir.rglob("*"):
-            if not path.is_file():
-                continue
-            if path.suffix.lower() not in self._valid_extensions:
-                continue
-            relative = path.relative_to(self._root_dir)
-            images.append(DatasetImage(path=path, relative_path=relative))
-
-        images.sort(key=lambda item: str(item.relative_path).lower())
-        if limit is not None:
-            return images[: max(0, limit)]
-        return images
+from .dataset import normalize_group_name
 
 
 @dataclass(frozen=True)
@@ -69,7 +23,7 @@ class GroundTruthRepository:
 
     def __init__(self, rows: Iterable[GroundTruthEntry] | None = None):
         entries = list(rows) if rows is not None else self._parse_default_rows()
-        self._index: Dict[tuple[str, str], GroundTruthEntry] = {}
+        self._index: dict[tuple[str, str], GroundTruthEntry] = {}
         for entry in entries:
             key = (normalize_group_name(entry.group), entry.filename.lower())
             self._index[key] = GroundTruthEntry(
@@ -159,7 +113,7 @@ exemple1.png 4 7.25 gp1
 26.jpg 8 3.51 gp1
 27.jpg 9 0.88 gp1
 28.jpg 3 0.21 gp1
-29.jpg 5 0.36 gp1
+29.jpg 5 3.60 gp1
 30.jpg 7 3.72 gp1
 31.jpg 4 1.7 gp1
 3_1.jpg 8 5 grp3

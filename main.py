@@ -8,6 +8,6 @@ if __name__ == "__main__":
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    from src.runner import AppRunner
+    from src.app.main import main
 
-    AppRunner().main()
+    main()

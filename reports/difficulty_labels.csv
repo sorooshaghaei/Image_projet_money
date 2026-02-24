@@ -1,0 +1,2 @@
+file,group,status,difficulty,coin_pred,coin_true,coin_diff,coin_abs_diff,value_pred_cents,value_true_cents,value_diff_cents,value_abs_diff_cents
+gp1/18.png,gp1,OK,medium,7,7,0,0,418,431,-13,13

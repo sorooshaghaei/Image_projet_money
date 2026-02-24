@@ -24,7 +24,7 @@ HOUGH_PRESETS: dict[str, HoughPreset] = {
 
 def default_dataset_dir() -> Path:
     """Resolve the default dataset folder relative to repository root."""
-    return Path(__file__).resolve().parent.parent / "data" / "images"
+    return Path(__file__).resolve().parent.parent.parent / "data" / "images"
 
 
 @dataclass(frozen=True)

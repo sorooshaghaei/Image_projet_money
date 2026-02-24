@@ -7,11 +7,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from src.config import PipelineConfig
-from src.detectors import CoinDetector, CoinValueEstimator, ValueEstimator
-from src.io_utils import letterbox_resize_to_canvas, read_bgr_or_raise
-from src.models import AnalysisResult, PipelineStep
-from src.preprocessing import ImagePreprocessing, normalize_odd_ksize
+from src.common.image_io import letterbox_resize_to_canvas, read_bgr_or_raise
+from src.pipeline.config import PipelineConfig
+from src.pipeline.detectors import CoinDetector, CoinValueEstimator, ValueEstimator
+from src.pipeline.models import AnalysisResult, PipelineStep
+from src.pipeline.preprocessing import ImagePreprocessing, normalize_odd_ksize
 
 
 class Analyzer:

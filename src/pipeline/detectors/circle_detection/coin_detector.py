@@ -21,8 +21,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from src.config import HoughPreset
-from src.preprocessing import auto_hough_param1_from_gradient
+from src.pipeline.config import HoughPreset
+from src.pipeline.preprocessing import auto_hough_param1_from_gradient
 
 from .coin_detection_result import CoinDetectionResult
 

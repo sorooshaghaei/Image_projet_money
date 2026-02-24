@@ -1,14 +1,11 @@
-"""Dataclasses for pipeline and evaluation results."""
+"""Evaluation models and aggregate metric computation."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-import numpy as np
-
-from src.dataset import GroundTruthEntry
+from src.data.ground_truth import GroundTruthEntry
 
 
 @dataclass(frozen=True)
@@ -59,9 +56,6 @@ class EvaluationItem:
 class Evaluator:
     """Accumulates evaluation items and computes summary metrics."""
 
-    VALUE_TOLERANCE_CENTS = 100
-    VALUE_SOFT_CAP_CENTS = 400
-
     def __init__(self):
         self._items: list[EvaluationItem] = []
         self._skipped_missing_ground_truth = 0
@@ -110,43 +104,32 @@ class Evaluator:
 
     def _compute_metrics(self, items: list[EvaluationItem]) -> dict[str, float | int | None]:
         """Compute coin/value metrics for a given item subset."""
-        value_tolerance_cents = int(self.VALUE_TOLERANCE_CENTS)
-        value_soft_cap_cents = int(max(self.VALUE_SOFT_CAP_CENTS, value_tolerance_cents + 1))
-
-        def _value_quality_score(abs_diff_cents: int) -> float:
-            diff = float(max(0, int(abs_diff_cents)))
-            tol = float(value_tolerance_cents)
-            cap = float(value_soft_cap_cents)
-            if diff <= tol:
-                return 100.0
-            if diff >= cap:
-                return 0.0
-            return float(100.0 * (1.0 - (diff - tol) / (cap - tol)))
-
         if not items:
             return {
                 "evaluated": 0,
                 "coin_correct": 0,
                 "coin_accuracy": 0.0,
-                "coin_mae": 0.0,
                 "coin_total_abs_error": 0,
                 "value_evaluated": 0,
-                "value_correct": 0,
-                "value_accuracy": 0.0,
-                "value_correct_exact": 0,
-                "value_accuracy_exact": 0.0,
+                "value_precision": 0.0,
+                "value_recall": 0.0,
+                "value_f1": 0.0,
                 "value_mae_cents": 0.0,
                 "value_mae_eur": 0.0,
+                "value_mse_cents2": 0.0,
+                "value_mse_eur2": 0.0,
                 "value_total_abs_error_cents": 0,
-                "value_tolerance_cents": value_tolerance_cents,
-                "value_soft_cap_cents": value_soft_cap_cents,
-                "value_error_score": 0.0,
+                "value_total_sq_error_cents2": 0.0,
+                "value_true_positive_cents": 0,
+                "value_false_positive_cents": 0,
+                "value_false_negative_cents": 0,
                 "coin_score": 0.0,
                 "value_score": None,
-                "general_score": 0.0,
+                "general_score": None,
                 "correct": 0,
                 "accuracy": 0.0,
-                "mae": 0.0,
+                "mae": None,
+                "mse": None,
                 "total_abs_error": 0,
             }
 
@@ -154,54 +137,70 @@ class Evaluator:
         coin_correct = sum(1 for item in items if item.is_correct)
         coin_total_abs_error = sum(item.abs_diff for item in items)
         coin_accuracy = (coin_correct / evaluated) * 100.0
-        coin_mae = coin_total_abs_error / evaluated
 
         value_items = [item for item in items if item.has_value_ground_truth]
         value_evaluated = len(value_items)
-        value_correct_exact = sum(1 for item in value_items if item.value_is_correct)
-        value_correct = sum(1 for item in value_items if int(item.value_abs_diff_cents or 0) <= value_tolerance_cents)
+        value_true_positive_cents = sum(
+            min(max(int(item.predicted_value_cents), 0), max(int(item.expected_value_cents or 0), 0))
+            for item in value_items
+        )
+        value_false_positive_cents = sum(
+            max(int(item.predicted_value_cents) - int(item.expected_value_cents or 0), 0) for item in value_items
+        )
+        value_false_negative_cents = sum(
+            max(int(item.expected_value_cents or 0) - int(item.predicted_value_cents), 0) for item in value_items
+        )
+        value_precision = (
+            (value_true_positive_cents / (value_true_positive_cents + value_false_positive_cents)) * 100.0
+            if (value_true_positive_cents + value_false_positive_cents) > 0
+            else 0.0
+        )
+        value_recall = (
+            (value_true_positive_cents / (value_true_positive_cents + value_false_negative_cents)) * 100.0
+            if (value_true_positive_cents + value_false_negative_cents) > 0
+            else 0.0
+        )
+        value_f1 = (
+            (2.0 * value_precision * value_recall) / (value_precision + value_recall)
+            if (value_precision + value_recall) > 0.0
+            else 0.0
+        )
         value_total_abs_error_cents = sum(int(item.value_abs_diff_cents or 0) for item in value_items)
-        value_accuracy_exact = (value_correct_exact / value_evaluated) * 100.0 if value_evaluated > 0 else 0.0
-        value_accuracy = (value_correct / value_evaluated) * 100.0 if value_evaluated > 0 else 0.0
+        value_total_sq_error_cents2 = sum(int(item.value_diff_cents or 0) ** 2 for item in value_items)
         value_mae_cents = (value_total_abs_error_cents / value_evaluated) if value_evaluated > 0 else 0.0
+        value_mse_cents2 = (value_total_sq_error_cents2 / value_evaluated) if value_evaluated > 0 else 0.0
         value_mae_eur = value_mae_cents / 100.0
+        value_mse_eur2 = value_mse_cents2 / 10000.0
 
-        coin_error_score = 100.0 / (1.0 + coin_mae)
-        coin_score = 0.60 * coin_accuracy + 0.40 * coin_error_score
-
-        if value_evaluated > 0:
-            quality_scores = [_value_quality_score(int(item.value_abs_diff_cents or 0)) for item in value_items]
-            value_error_score = float(np.mean(quality_scores)) if quality_scores else 0.0
-            value_score = 0.55 * value_accuracy + 0.45 * value_error_score
-            general_score = 0.50 * coin_score + 0.50 * value_score
-        else:
-            value_error_score = 0.0
-            value_score = None
-            general_score = coin_score
+        coin_score = coin_accuracy
+        value_score = None
+        general_score = None
 
         return {
             "evaluated": evaluated,
             "coin_correct": coin_correct,
             "coin_accuracy": coin_accuracy,
-            "coin_mae": coin_mae,
             "coin_total_abs_error": coin_total_abs_error,
             "value_evaluated": value_evaluated,
-            "value_correct": value_correct,
-            "value_accuracy": value_accuracy,
-            "value_correct_exact": value_correct_exact,
-            "value_accuracy_exact": value_accuracy_exact,
+            "value_precision": value_precision,
+            "value_recall": value_recall,
+            "value_f1": value_f1,
             "value_mae_cents": value_mae_cents,
             "value_mae_eur": value_mae_eur,
+            "value_mse_cents2": value_mse_cents2,
+            "value_mse_eur2": value_mse_eur2,
             "value_total_abs_error_cents": value_total_abs_error_cents,
-            "value_tolerance_cents": value_tolerance_cents,
-            "value_soft_cap_cents": value_soft_cap_cents,
-            "value_error_score": value_error_score,
+            "value_total_sq_error_cents2": value_total_sq_error_cents2,
+            "value_true_positive_cents": value_true_positive_cents,
+            "value_false_positive_cents": value_false_positive_cents,
+            "value_false_negative_cents": value_false_negative_cents,
             "coin_score": coin_score,
             "value_score": value_score,
             "general_score": general_score,
             "correct": coin_correct,
             "accuracy": coin_accuracy,
-            "mae": coin_mae,
+            "mae": None,
+            "mse": None,
             "total_abs_error": coin_total_abs_error,
         }
 
@@ -223,26 +222,3 @@ class Evaluator:
 
 class Evaluation(Evaluator):
     """Alias class kept for pipeline stage naming."""
-
-
-@dataclass
-class PipelineStep:
-    """One visualization step image in the processing pipeline."""
-
-    name: str
-    image: np.ndarray
-    cmap: str
-
-
-@dataclass
-class AnalysisResult:
-    """Final per-image pipeline result used by runner and viewer."""
-
-    source_path: Path
-    steps: list[PipelineStep]
-    circle_count: int
-    hough_params: dict[str, float | int]
-    debug_info: dict[str, Any]
-
-
-PipelineResult = AnalysisResult
