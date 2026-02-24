@@ -1,95 +1,119 @@
-# Processing Pipeline
+# PIPELINE.md
+**Image Processing and Analysis Pipeline – (VMI)**
 
-This document describes the implemented runtime pipeline used by `main.py`.
+This document describes the current implemented pipeline used by the CLI (`main.py`), not a planned draft.
 
-## 1. Runtime Entry Flow
+---
 
-Main execution path:
+## 1. Global Pipeline Overview
 
-1. `main.py`
-2. `src/app/cli.py` (`AppRunner`)
-3. `src/pipeline/orchestrator.py` (`Analyzer`)
+Runtime flow for one image:
 
-Per image, the system runs:
+1. Load image and letterbox-resize to `640x480`
+2. Preprocess (grayscale + configurable blur)
+3. Detect circles with Hough + automatic `minRadius` sweep
+4. Analyze coin color/material (one-color, bi-metal, uncertain)
+5. Estimate denomination/value from per-coin stats
+6. Aggregate metrics and optionally visualize/export debug artifacts
 
-1. Input read + letterbox normalization
-2. Preprocessing
-3. Circle detection
-4. Color/material analysis
-5. Denomination and total-value estimation
-6. Evaluation/reporting
-7. Optional interactive viewer and debug export
+Orchestrator entrypoint: `src/pipeline/orchestrator.py`.
 
-## 2. Input and Normalization
+---
 
-Files:
+## 2. Stage A – Input Normalization
 
-- `src/common/image_io.py`
-- `src/pipeline/orchestrator.py`
+File: `src/pipeline/orchestrator.py`
 
-Steps:
+- Reads image as BGR
+- Resizes with letterbox to fixed canvas (`target_width`, `target_height`)
 
-- Read image in BGR
-- Resize with letterbox to fixed canvas (`640x480` by default)
+Why:
 
-Goal: keep detector behavior stable across mixed image sizes.
+- Keeps detector thresholds stable across mixed input resolutions
+- Makes evaluation/debug comparisons consistent
 
-## 3. Preprocessing
+---
+
+## 3. Stage B – Preprocessing
 
 File: `src/pipeline/preprocessing.py`
 
-Current active preprocessing:
+Current effective preprocessing:
 
-- BGR -> grayscale
-- Blur (`gauss` or `median`)
+1. Convert BGR to grayscale
+2. Apply blur (`gauss` or `median`)
 
 Notes:
 
-- Blur kernel size is normalized to an odd positive integer.
-- No additional CLAHE/histogram normalization stage is used in current runtime.
+- CLAHE and histogram normalization fields exist in config for compatibility/debug payload, but are currently disabled by default.
+- Blur stage name is propagated to viewer (`Gaussian Blur` / `Median Blur`).
 
-## 4. Circle Detection (Hough + Radius Sweep)
+---
+
+## 4. Stage C – Circle Detection
 
 File: `src/pipeline/detectors/circle_detection/coin_detector.py`
 
-Main logic:
+### 4.1 Adaptive `param1` estimation
 
-1. Estimate Hough `param1` from Scharr gradient statistics (`auto_hough_param1_from_gradient`)
-2. Sweep `minRadius` over a configured interval
-3. Score each result with geometric penalties (concentric duplicates, nesting, intrusion)
-4. Select `minRadius` using plateau-like voting on stable counts
-5. Run final `cv2.HoughCircles` and build debug overlay
+`param1` (Canny high threshold inside Hough) is inferred from Scharr gradient magnitude percentiles (`auto_hough_param1_from_gradient`).
 
-Outputs:
+### 4.2 Automatic `minRadius` selection
 
-- Detected circles `(x, y, r)`
-- Circle count
-- Effective Hough parameters
-- Sweep diagnostics (`plateau_debug`, `sweep_results`)
+The detector sweeps `minRadius` over a configured range and scores each candidate using geometric penalties:
 
-## 5. Color and Material Analysis
+- concentric duplicates
+- nested circles
+- severe intrusions
+
+Then it selects a robust candidate via plateau-like voting (or best fallback when no clean candidate exists).
+
+### 4.3 Final detection + overlay
+
+Final Hough run outputs:
+
+- circles (`x, y, r`)
+- `circle_count`
+- debug overlay image
+- sweep diagnostics (`plateau_debug`, `sweep_results`)
+
+---
+
+## 5. Stage D – Color/Material Analysis
 
 File: `src/pipeline/detectors/color_analysis/coin_analyzer.py`
 
-For each detected circle:
+Per detected circle:
 
-1. Build full/inner/border masks
-2. Compute robust HSV/Lab statistics
-3. Extract color + structural cues
-4. Classify coin appearance:
-   - `one-color-like` (bronze/gold tendency)
-   - `bi-metal-like` (1e/2e tendency)
-   - `uncertain`
+1. Split pixels into full / inner / border masks
+2. Build a stable material sample ring (`0.45R..0.80R`) and filter V extremes
+3. Compute robust HSV center (circular hue + median S/V)
+4. Compute material cues and structural cues:
+   - HSV delta terms
+   - radial k-means agreement
+   - radial step score
+   - edge roughness score
 
-Supported material modes (`analysis_material_mode`):
+### Material modes
 
-- `hsv`
-- `hsv_kmeans`
-- `lab_proto` (default)
+Configured by `analysis_material_mode`:
 
-Detailed per-coin diagnostics are stored in `split_stats`.
+- `hsv`: direct heuristic HSV labeling
+- `hsv_kmeans`: per-coin HSV k-means (`k in {1,2}` auto-selected)
+- `lab_proto` (default): image-level Lab prototypes + scene-level Lab clustering, fused by confidence
 
-## 6. Denomination and Value Estimation
+Output labels include:
+
+- `one-color-like/bronze`
+- `one-color-like/gold`
+- `1-euro-like`, `2-euro-like`
+- `uncertain`
+
+Rich per-coin diagnostics are saved into `split_stats`.
+
+---
+
+## 6. Stage E – Denomination and Value Estimation
 
 Files:
 
@@ -98,71 +122,68 @@ Files:
 
 Process:
 
-1. Infer family (`bronze`, `gold`, `bimetal`, `unknown`)
-2. Estimate scale (`px_per_mm`) using bimetal references plus fallback voting
-3. Cluster radii by family
-4. Score denomination candidates
-5. Produce per-coin predictions, denomination counts, and total cents
+1. Infer family (`bronze`, `gold`, `bimetal`, `unknown`) from analyzed coin row
+2. Estimate `px_per_mm` scale (bimetal reference + fallback voting)
+3. Cluster radii per family
+4. Score denomination probabilities
+5. Produce:
+   - per-coin best denomination/probability
+   - family models and scale debug info
+   - denomination counts
+   - total value in cents
 
-Outputs include:
+---
 
-- `predictions` (per coin)
-- `counts` by denomination
-- `total_cents`
-- `scale_info` and `family_models` for debugging
+## 7. Stage F – Evaluation and Viewer
 
-## 7. Evaluation and Reporting
+CLI file: `src/app/cli.py`  
+Viewer file: `src/ui/debug_viewer.py`
 
-Files:
-
-- `src/evaluation/metrics.py`
-- `src/evaluation/reporting.py`
-- `src/data/ground_truth.py`
-
-Metrics:
+Evaluation:
 
 - Coin exact-match accuracy
-- Value MAE and MSE
-- Per-group summaries
+- Value MAE / MSE
+- Per-group summary
+- CSV report (`reports/evaluation_rows.csv` by default)
 
-Default CSV report:
+Viewer:
 
-- `reports/evaluation_rows.csv`
+- Browse images and pipeline steps
+- Toggle final-only mode
+- Export current debug snapshot (`.json` + `.txt`)
 
-Rows without matching annotation are marked `SKIP_NO_GT`.
+---
 
-## 8. Viewer and Debug Export
+## 8. Debug Export Format
 
-Files:
+File: `src/common/debug_export.py`
 
-- `src/ui/debug_viewer.py`
-- `src/common/debug_export.py`
+Export payload contains:
 
-Viewer features:
+- source/relative path
+- current viewer step metadata
+- coin/value metrics
+- Hough params
+- compact per-coin predictions
+- full raw debug payload (`split_stats`, family models, scale info, etc.)
 
-- Navigate image list and pipeline steps
-- Toggle final-only/full pipeline view
-- Export current state (`.json` + `.txt`) with key `c`/`x`
+Saved under `debug_exports/<group>/` as:
 
-Debug export payload includes:
+- `<stem>_debug_final.json|txt` (final-only mode)
+- `<stem>_debug_sXX.json|txt` (full pipeline mode)
 
-- Relative path and viewer metadata
-- Coin/value metrics
-- Hough parameters
-- Per-coin predictions
-- Raw debug payload (`split_stats`, `scale_info`, etc.)
+---
 
-## 9. Main Configuration
+## 9. Main Configuration Knobs
 
 File: `src/pipeline/config.py`
 
-Main defaults:
+Key defaults:
 
-- Dataset dir: `data/images`
-- Target size: `640x480`
 - Hough preset: `test1`
-- Blur mode: `gauss`
-- Material mode: `lab_proto`
-- Viewer default mode: final-only
+- blur mode: `gauss`
+- `analysis_bimetal_mode`: `hybrid`
+- `analysis_material_mode`: `lab_proto`
+- viewer default: final-only
 
-All runtime parameters are centralized in `PipelineConfig`.
+All values are centralized in `PipelineConfig` and injected through the orchestrator.
