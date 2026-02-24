@@ -111,23 +111,12 @@ class Evaluator:
                 "coin_accuracy": 0.0,
                 "coin_total_abs_error": 0,
                 "value_evaluated": 0,
-                "value_precision": 0.0,
-                "value_recall": 0.0,
-                "value_f1": 0.0,
                 "value_mae_cents": 0.0,
                 "value_mae_eur": 0.0,
                 "value_mse_cents2": 0.0,
                 "value_mse_eur2": 0.0,
                 "value_total_abs_error_cents": 0,
                 "value_total_sq_error_cents2": 0.0,
-                "value_true_positive_cents": 0,
-                "value_false_positive_cents": 0,
-                "value_false_negative_cents": 0,
-                "coin_score": 0.0,
-                "value_score": None,
-                "general_score": None,
-                "correct": 0,
-                "accuracy": 0.0,
                 "mae": None,
                 "mse": None,
                 "total_abs_error": 0,
@@ -140,31 +129,6 @@ class Evaluator:
 
         value_items = [item for item in items if item.has_value_ground_truth]
         value_evaluated = len(value_items)
-        value_true_positive_cents = sum(
-            min(max(int(item.predicted_value_cents), 0), max(int(item.expected_value_cents or 0), 0))
-            for item in value_items
-        )
-        value_false_positive_cents = sum(
-            max(int(item.predicted_value_cents) - int(item.expected_value_cents or 0), 0) for item in value_items
-        )
-        value_false_negative_cents = sum(
-            max(int(item.expected_value_cents or 0) - int(item.predicted_value_cents), 0) for item in value_items
-        )
-        value_precision = (
-            (value_true_positive_cents / (value_true_positive_cents + value_false_positive_cents)) * 100.0
-            if (value_true_positive_cents + value_false_positive_cents) > 0
-            else 0.0
-        )
-        value_recall = (
-            (value_true_positive_cents / (value_true_positive_cents + value_false_negative_cents)) * 100.0
-            if (value_true_positive_cents + value_false_negative_cents) > 0
-            else 0.0
-        )
-        value_f1 = (
-            (2.0 * value_precision * value_recall) / (value_precision + value_recall)
-            if (value_precision + value_recall) > 0.0
-            else 0.0
-        )
         value_total_abs_error_cents = sum(int(item.value_abs_diff_cents or 0) for item in value_items)
         value_total_sq_error_cents2 = sum(int(item.value_diff_cents or 0) ** 2 for item in value_items)
         value_mae_cents = (value_total_abs_error_cents / value_evaluated) if value_evaluated > 0 else 0.0
@@ -172,33 +136,18 @@ class Evaluator:
         value_mae_eur = value_mae_cents / 100.0
         value_mse_eur2 = value_mse_cents2 / 10000.0
 
-        coin_score = coin_accuracy
-        value_score = None
-        general_score = None
-
         return {
             "evaluated": evaluated,
             "coin_correct": coin_correct,
             "coin_accuracy": coin_accuracy,
             "coin_total_abs_error": coin_total_abs_error,
             "value_evaluated": value_evaluated,
-            "value_precision": value_precision,
-            "value_recall": value_recall,
-            "value_f1": value_f1,
             "value_mae_cents": value_mae_cents,
             "value_mae_eur": value_mae_eur,
             "value_mse_cents2": value_mse_cents2,
             "value_mse_eur2": value_mse_eur2,
             "value_total_abs_error_cents": value_total_abs_error_cents,
             "value_total_sq_error_cents2": value_total_sq_error_cents2,
-            "value_true_positive_cents": value_true_positive_cents,
-            "value_false_positive_cents": value_false_positive_cents,
-            "value_false_negative_cents": value_false_negative_cents,
-            "coin_score": coin_score,
-            "value_score": value_score,
-            "general_score": general_score,
-            "correct": coin_correct,
-            "accuracy": coin_accuracy,
             "mae": None,
             "mse": None,
             "total_abs_error": coin_total_abs_error,

@@ -203,9 +203,6 @@ class ValueEstimator:
             cv2.circle(out, (x, y), r, color, 2)
             cv2.circle(out, (x, y), 2, (0, 0, 0), 3)
             marker = _coin_marker_token(coin_id)
-            marker_radius = max(8, min(16, int(0.34 * max(1, r))))
-            cv2.circle(out, (x, y), marker_radius, (15, 15, 15), -1)
-            cv2.circle(out, (x, y), marker_radius, color, 2)
 
             font = cv2.FONT_HERSHEY_SIMPLEX
             scale = 0.52 if len(marker) == 1 else 0.42

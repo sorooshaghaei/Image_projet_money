@@ -92,7 +92,7 @@ exemple1.png 4 7.25 gp1
 15.jpg 35 17.32 gp5
 16.jpg 48 18.69 gp5
 17.jpg 48 18.20 gp5
-0.jpeg 2 2.2 gp5
+0.jpeg 2 2.02 gp5
 1.jpeg 4 4.22 gp5
 2.jpeg 3 3.2 gp5
 3.jpeg 4 0.8 gp5

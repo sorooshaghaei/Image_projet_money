@@ -28,6 +28,40 @@ import numpy as np
 
 from .coin_analyzer_config import CoinAnalyzerConfig
 
+# Lab-prototype anchor thresholds (coin-level).
+LAB_PROTO_MIN_CHROMA = 5.0
+LAB_PROTO_ANCHOR_SCORE_MIN = 0.52
+LAB_PROTO_ANCHOR_MARGIN_MIN = 0.14
+LAB_PROTO_BRONZE_ANCHOR_H_MAX = 16
+LAB_PROTO_BRONZE_ANCHOR_S_MIN = 55
+LAB_PROTO_GOLD_ANCHOR_H_MIN = 18
+LAB_PROTO_GOLD_ANCHOR_S_MIN = 75
+LAB_PROTO_WEIGHT_BASE = 0.2
+LAB_PROTO_WEIGHT_CHROMA_SCALE = 0.03
+
+# Lab-prototype decision thresholds.
+LAB_PROTO_CONF_MARGIN_SCALE = 2.5
+LAB_PROTO_MARGIN_FALLBACK_MAX = 0.06
+LAB_PROTO_ONE_PROTO_MAX_DIST = 16.0
+LAB_PROTO_NO_ANCHOR_BRONZE_S_MAX = 75
+LAB_PROTO_NO_ANCHOR_BRONZE_H_MAX = 15
+LAB_PROTO_NO_ANCHOR_BRONZE_CONF = 0.30
+LAB_PROTO_GOLD_GUARD_S_MAX = 70
+LAB_PROTO_GOLD_GUARD_H_MAX = 14
+LAB_PROTO_GOLD_GUARD_CONF_MAX = 0.45
+LAB_PROTO_GOLD_GUARD_BRONZE_CONF = 0.35
+
+# Scene-level Lab clustering thresholds (image-level).
+SCENE_CLUSTER_MIN_CHROMA = 2.0
+SCENE_CLUSTER_CHROMA_NORM_SCALE = 36.0
+SCENE_CLUSTER_MIN_COINS = 5
+SCENE_CLUSTER_MIN_CLUSTER_SIZE = 2
+SCENE_CLUSTER_MIN_CENTER_DIST = 0.16
+SCENE_CLUSTER_B_WEIGHT = 0.08
+SCENE_CLUSTER_CONF_BIAS = 0.5
+SCENE_CLUSTER_CONF_SCALE = 1.4
+LAB_SCENE_OVERRIDE_DELTA = 0.12
+
 
 class CoinAnalyzer:
     """Facade object around the low-level coin color analysis function."""
@@ -146,6 +180,318 @@ def mean_hsv_from_pixels(hsv_pixels: np.ndarray) -> tuple[int, int, int]:
     return h_cv, s_cv, v_cv
 
 
+def mean_lab_from_hsv_pixels(hsv_pixels: np.ndarray) -> tuple[float, float, float]:
+    """Compute robust Lab center from HSV pixels."""
+    if hsv_pixels is None or len(hsv_pixels) == 0:
+        return 0.0, 0.0, 0.0
+
+    hsv_u8 = np.asarray(hsv_pixels, dtype=np.uint8)
+    hsv_u8 = hsv_u8.reshape(-1, 1, 3)
+    bgr = cv2.cvtColor(hsv_u8, cv2.COLOR_HSV2BGR)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
+    l_med = float(np.median(lab[:, 0]))
+    a_med = float(np.median(lab[:, 1]))
+    b_med = float(np.median(lab[:, 2]))
+    return l_med, a_med, b_med
+
+
+def build_lab_material_prototypes(rows: list[dict]) -> dict[str, object]:
+    """Build bronze/gold Lab(ab) prototypes from high-confidence coins in one image."""
+    bronze_ab: list[tuple[float, float]] = []
+    bronze_w: list[float] = []
+    gold_ab: list[tuple[float, float]] = []
+    gold_w: list[float] = []
+
+    for row in rows:
+        material_hsv = row.get("material_hsv")
+        material_lab = row.get("material_lab")
+        if not isinstance(material_hsv, (tuple, list)) or len(material_hsv) < 3:
+            continue
+        if not isinstance(material_lab, (tuple, list)) or len(material_lab) < 3:
+            continue
+
+        h = int(material_hsv[0])
+        s = int(material_hsv[1])
+        v = int(material_hsv[2])
+        _, a_lab, b_lab = float(material_lab[0]), float(material_lab[1]), float(material_lab[2])
+        chroma = float(np.hypot(a_lab - 128.0, b_lab - 128.0))
+        if chroma < LAB_PROTO_MIN_CHROMA:
+            continue
+
+        bronze_score = bronze_score_from_inner_hsv(h, s, v)
+        gold_score = gold_score_from_inner_hsv(h, s, v)
+        margin = abs(bronze_score - gold_score)
+        weight = float((LAB_PROTO_WEIGHT_BASE + margin) * (1.0 + LAB_PROTO_WEIGHT_CHROMA_SCALE * chroma))
+
+        if (
+            bronze_score >= LAB_PROTO_ANCHOR_SCORE_MIN
+            and (bronze_score - gold_score) >= LAB_PROTO_ANCHOR_MARGIN_MIN
+            and h <= LAB_PROTO_BRONZE_ANCHOR_H_MAX
+            and s >= LAB_PROTO_BRONZE_ANCHOR_S_MIN
+        ):
+            bronze_ab.append((a_lab, b_lab))
+            bronze_w.append(weight)
+        elif (
+            gold_score >= LAB_PROTO_ANCHOR_SCORE_MIN
+            and (gold_score - bronze_score) >= LAB_PROTO_ANCHOR_MARGIN_MIN
+            and h >= LAB_PROTO_GOLD_ANCHOR_H_MIN
+            and s >= LAB_PROTO_GOLD_ANCHOR_S_MIN
+        ):
+            gold_ab.append((a_lab, b_lab))
+            gold_w.append(weight)
+
+    out: dict[str, object] = {
+        "has_bronze": False,
+        "has_gold": False,
+        "bronze_ab": (0.0, 0.0),
+        "gold_ab": (0.0, 0.0),
+        "anchor_counts": {"bronze": len(bronze_ab), "gold": len(gold_ab)},
+    }
+
+    if len(bronze_ab) > 0:
+        arr = np.asarray(bronze_ab, dtype=np.float32)
+        ww = np.asarray(bronze_w, dtype=np.float32)
+        wsum = float(np.sum(ww))
+        if wsum > 1e-6:
+            a = float(np.sum(arr[:, 0] * ww) / wsum)
+            b = float(np.sum(arr[:, 1] * ww) / wsum)
+            out["has_bronze"] = True
+            out["bronze_ab"] = (a, b)
+
+    if len(gold_ab) > 0:
+        arr = np.asarray(gold_ab, dtype=np.float32)
+        ww = np.asarray(gold_w, dtype=np.float32)
+        wsum = float(np.sum(ww))
+        if wsum > 1e-6:
+            a = float(np.sum(arr[:, 0] * ww) / wsum)
+            b = float(np.sum(arr[:, 1] * ww) / wsum)
+            out["has_gold"] = True
+            out["gold_ab"] = (a, b)
+
+    return out
+
+
+def infer_material_label_from_lab_prototypes(
+    row: dict,
+    prototypes: dict[str, object],
+    fallback_label: str,
+) -> tuple[str, float]:
+    """Infer bronze/gold from Lab(ab) distance to image-level prototypes."""
+    material_lab = row.get("material_lab")
+    material_hsv = row.get("material_hsv")
+    if not isinstance(material_lab, (tuple, list)) or len(material_lab) < 3:
+        return fallback_label, 0.0
+    if not isinstance(material_hsv, (tuple, list)) or len(material_hsv) < 3:
+        return fallback_label, 0.0
+
+    a = float(material_lab[1])
+    b = float(material_lab[2])
+    h = int(material_hsv[0])
+    s = int(material_hsv[1])
+    has_bronze = bool(prototypes.get("has_bronze", False))
+    has_gold = bool(prototypes.get("has_gold", False))
+
+    if not has_bronze and not has_gold:
+        if s < LAB_PROTO_NO_ANCHOR_BRONZE_S_MAX and h <= LAB_PROTO_NO_ANCHOR_BRONZE_H_MAX:
+            return "bronze", LAB_PROTO_NO_ANCHOR_BRONZE_CONF
+        return fallback_label, 0.0
+
+    if has_bronze:
+        pb = prototypes.get("bronze_ab", (0.0, 0.0))
+        db = float(np.hypot(a - float(pb[0]), b - float(pb[1])))
+    else:
+        db = 1e9
+    if has_gold:
+        pg = prototypes.get("gold_ab", (0.0, 0.0))
+        dg = float(np.hypot(a - float(pg[0]), b - float(pg[1])))
+    else:
+        dg = 1e9
+
+    if has_bronze and has_gold:
+        label = "bronze" if db < dg else "gold"
+        margin = abs(db - dg) / max(db + dg, 1e-6)
+        confidence = float(np.clip(margin * LAB_PROTO_CONF_MARGIN_SCALE, 0.0, 1.0))
+        if (
+            label == "gold"
+            and s < LAB_PROTO_GOLD_GUARD_S_MAX
+            and h <= LAB_PROTO_GOLD_GUARD_H_MAX
+            and confidence < LAB_PROTO_GOLD_GUARD_CONF_MAX
+        ):
+            return "bronze", confidence
+        if margin < LAB_PROTO_MARGIN_FALLBACK_MAX and fallback_label in {"bronze", "gold"}:
+            return fallback_label, confidence
+        return label, confidence
+
+    if has_bronze and db <= LAB_PROTO_ONE_PROTO_MAX_DIST:
+        return "bronze", float(np.clip(1.0 - (db / LAB_PROTO_ONE_PROTO_MAX_DIST), 0.0, 1.0))
+    if has_gold and dg <= LAB_PROTO_ONE_PROTO_MAX_DIST:
+        if s < LAB_PROTO_GOLD_GUARD_S_MAX and h <= LAB_PROTO_GOLD_GUARD_H_MAX:
+            return "bronze", LAB_PROTO_GOLD_GUARD_BRONZE_CONF
+        return "gold", float(np.clip(1.0 - (dg / LAB_PROTO_ONE_PROTO_MAX_DIST), 0.0, 1.0))
+    if s < LAB_PROTO_NO_ANCHOR_BRONZE_S_MAX and h <= LAB_PROTO_NO_ANCHOR_BRONZE_H_MAX:
+        return "bronze", LAB_PROTO_NO_ANCHOR_BRONZE_CONF
+    return fallback_label, 0.0
+
+
+def build_scene_lab_cluster_labels(rows: list[dict]) -> dict[int, tuple[str, float]]:
+    """Infer bronze/gold from scene-level clustering of coin Lab directions."""
+    feats: list[list[float]] = []
+    row_ids: list[int] = []
+    hue_vals: list[int] = []
+    b_vals: list[float] = []
+
+    for row in rows:
+        material_lab = row.get("material_lab")
+        material_hsv = row.get("material_hsv")
+        if not isinstance(material_lab, (tuple, list)) or len(material_lab) < 3:
+            continue
+        if not isinstance(material_hsv, (tuple, list)) or len(material_hsv) < 3:
+            continue
+
+        a = float(material_lab[1])
+        b = float(material_lab[2])
+        da = a - 128.0
+        db = b - 128.0
+        chroma = float(np.hypot(da, db))
+        if chroma < SCENE_CLUSTER_MIN_CHROMA:
+            continue
+
+        dir_a = da / (chroma + 1e-6)
+        dir_b = db / (chroma + 1e-6)
+        chroma_norm = float(np.clip(chroma / SCENE_CLUSTER_CHROMA_NORM_SCALE, 0.0, 1.0))
+        feats.append([dir_a, dir_b, chroma_norm])
+        row_ids.append(int(row.get("id", -1)))
+        hue_vals.append(int(material_hsv[0]))
+        b_vals.append(float(b))
+
+    if len(feats) < SCENE_CLUSTER_MIN_COINS:
+        return {}
+
+    data = np.asarray(feats, dtype=np.float32)
+    attempts = 8
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-3)
+    compactness, labels, centers = cv2.kmeans(
+        data,
+        2,
+        None,
+        criteria,
+        attempts,
+        cv2.KMEANS_PP_CENTERS,
+    )
+    _ = compactness
+    labels = labels.reshape(-1)
+    centers = centers.reshape(2, -1)
+
+    counts = [int(np.sum(labels == 0)), int(np.sum(labels == 1))]
+    if min(counts) < SCENE_CLUSTER_MIN_CLUSTER_SIZE:
+        return {}
+
+    center_dist = float(np.linalg.norm(centers[0] - centers[1]))
+    if center_dist < SCENE_CLUSTER_MIN_CENTER_DIST:
+        return {}
+
+    cluster_scores: dict[int, float] = {}
+    for c in (0, 1):
+        idx = np.where(labels == c)[0]
+        if idx.size == 0:
+            cluster_scores[c] = -1e9
+            continue
+        mean_h = float(np.mean([hue_vals[int(i)] for i in idx]))
+        mean_b = float(np.mean([b_vals[int(i)] for i in idx]))
+        cluster_scores[c] = mean_h + SCENE_CLUSTER_B_WEIGHT * (mean_b - 128.0)
+
+    gold_cluster = 0 if cluster_scores[0] >= cluster_scores[1] else 1
+    bronze_cluster = 1 - gold_cluster
+
+    out: dict[int, tuple[str, float]] = {}
+    for i, rid in enumerate(row_ids):
+        if rid < 0:
+            continue
+        c = int(labels[i])
+        own = centers[c]
+        other = centers[1 - c]
+        d_own = float(np.linalg.norm(data[i] - own))
+        d_other = float(np.linalg.norm(data[i] - other))
+        margin = (d_other - d_own) / max(d_other + d_own, 1e-6)
+        conf = float(np.clip(SCENE_CLUSTER_CONF_BIAS + SCENE_CLUSTER_CONF_SCALE * margin, 0.0, 1.0))
+        if c == gold_cluster:
+            out[rid] = ("gold", conf)
+        elif c == bronze_cluster:
+            out[rid] = ("bronze", conf)
+    return out
+
+
+def fuse_lab_and_scene_material_labels(
+    fallback_label: str,
+    lab_label_raw: str,
+    lab_conf_raw: float,
+    scene_label: str,
+    scene_conf: float,
+) -> tuple[str, float]:
+    """Combine per-coin Lab prototype decision with scene-level cluster label."""
+    final_label = lab_label_raw
+    final_conf = float(lab_conf_raw)
+
+    if final_label not in {"bronze", "gold"} and scene_label in {"bronze", "gold"}:
+        final_label = scene_label
+        final_conf = float(scene_conf)
+    elif scene_label in {"bronze", "gold"}:
+        if final_label == scene_label:
+            final_conf = max(final_conf, float(scene_conf))
+        elif float(scene_conf) > (final_conf + LAB_SCENE_OVERRIDE_DELTA):
+            final_label = scene_label
+            final_conf = float(scene_conf)
+
+    if final_label not in {"bronze", "gold"}:
+        final_label = fallback_label
+    return final_label, final_conf
+
+
+def enrich_rows_with_lab_material_labels(rows: list[dict]) -> None:
+    """Populate Lab-based material labels and confidences for every coin row."""
+    lab_prototypes = build_lab_material_prototypes(rows)
+    scene_lab_labels = build_scene_lab_cluster_labels(rows)
+
+    for row in rows:
+        fallback_for_lab = str(row.get("material_label_hsv_kmeans", "borderline"))
+        lab_label_raw, lab_conf_raw = infer_material_label_from_lab_prototypes(
+            row=row,
+            prototypes=lab_prototypes,
+            fallback_label=fallback_for_lab,
+        )
+        scene_label, scene_conf = scene_lab_labels.get(int(row.get("id", -1)), ("n/a", 0.0))
+        final_label, final_conf = fuse_lab_and_scene_material_labels(
+            fallback_label=fallback_for_lab,
+            lab_label_raw=lab_label_raw,
+            lab_conf_raw=float(lab_conf_raw),
+            scene_label=scene_label,
+            scene_conf=float(scene_conf),
+        )
+
+        row["material_label_lab_proto_raw"] = lab_label_raw
+        row["material_lab_proto_raw_conf"] = float(lab_conf_raw)
+        row["material_label_lab_scene"] = scene_label
+        row["material_lab_scene_conf"] = float(scene_conf)
+        row["material_label_lab_proto"] = final_label
+        row["material_lab_proto_conf"] = float(final_conf)
+
+
+def pick_material_label_by_mode(
+    material_mode: str,
+    material_label_hybrid: str,
+    material_label_hsv_kmeans: str,
+    material_label_lab_proto: str,
+    bronze_score_hsv: float,
+    bronze_score_hsv_kmeans: float,
+) -> tuple[str, float]:
+    """Return `(material_label, bronze_score)` for the configured material mode."""
+    if material_mode == "hsv_kmeans":
+        return material_label_hsv_kmeans, float(bronze_score_hsv_kmeans)
+    if material_mode == "lab_proto":
+        return material_label_lab_proto, float(bronze_score_hsv_kmeans)
+    return material_label_hybrid, float(bronze_score_hsv)
+
+
 def hsv_similarity_score(hsv_a: tuple[int, int, int], hsv_b: tuple[int, int, int]) -> float:
     """Simple similarity score in `[0, 1]` based on saturation distance."""
     _, sa, _ = hsv_a
@@ -223,32 +569,31 @@ def clamp_value(x: float, lo: float, hi: float) -> float:
 
 
 def bronze_score_from_inner_hsv(h: int, s: int, v: int) -> float:
-    """Estimate bronze-likeness from inner region HSV."""
-    h_term = clamp_value((18.0 - float(h)) / 3.0, 0.0, 1.0)
-    sat_conf = clamp_value((float(s) - 45.0) / 75.0, 0.0, 1.0)
-    val_conf = clamp_value((float(v) - 35.0) / 90.0, 0.0, 1.0)
-    conf = 0.65 * sat_conf + 0.35 * val_conf
-    return float(np.clip(h_term * max(0.35, conf), 0.0, 1.0))
+    """Estimate bronze-likeness from hue/chroma (minimal value influence)."""
+    _ = v
+    h_term = 1.0 - clamp_value(abs(float(h) - 9.5) / 6.5, 0.0, 1.0)
+    sat_conf = clamp_value((float(s) - 35.0) / 95.0, 0.0, 1.0)
+    conf = 0.45 + 0.55 * sat_conf
+    return float(np.clip(h_term * conf, 0.0, 1.0))
 
 
 def gold_score_from_inner_hsv(h: int, s: int, v: int) -> float:
-    """Estimate gold-likeness from inner region HSV."""
-    hue_center = 22.0
-    hue_width = 8.5
-    h_term = 1.0 - clamp_value(abs(float(h) - hue_center) / hue_width, 0.0, 1.0)
-    sat_conf = clamp_value((float(s) - 40.0) / 90.0, 0.0, 1.0)
-    val_conf = clamp_value((float(v) - 55.0) / 110.0, 0.0, 1.0)
-    conf = 0.60 * sat_conf + 0.40 * val_conf
-    return float(np.clip(h_term * max(0.30, conf), 0.0, 1.0))
+    """Estimate gold-likeness from hue/chroma (minimal value influence)."""
+    _ = v
+    h_term = 1.0 - clamp_value(abs(float(h) - 20.5) / 8.5, 0.0, 1.0)
+    sat_conf = clamp_value((float(s) - 35.0) / 95.0, 0.0, 1.0)
+    conf = 0.50 + 0.50 * sat_conf
+    return float(np.clip(h_term * conf, 0.0, 1.0))
 
 
 def label_material_from_inner_hsv(h: int, s: int, v: int) -> str:
-    """Primary material label from coarse HSV rules."""
-    if s < 45 or v < 35:
+    """Primary material label from coarse hue/chroma rules."""
+    _ = v
+    if s < 40:
         return "borderline"
-    if h <= 15:
+    if h <= 13:
         return "bronze"
-    if h >= 18:
+    if h >= 16:
         return "gold"
     return "borderline"
 
@@ -275,6 +620,182 @@ def fallback_material_from_inner_hsv(h: int, s: int, v: int) -> str:
 
     # Keep a deterministic fallback for very low-confidence borderline colors.
     return "bronze" if h <= 17 else "gold"
+
+
+def _filter_material_pixels_from_v_band(hsv_pixels: np.ndarray) -> np.ndarray:
+    """Remove shadow/highlight extremes and keep stable chromatic pixels."""
+    if hsv_pixels is None or int(len(hsv_pixels)) == 0:
+        return np.zeros((0, 3), dtype=np.uint8)
+
+    hsv_u8 = np.asarray(hsv_pixels, dtype=np.uint8)
+    if hsv_u8.ndim != 2 or hsv_u8.shape[1] < 3:
+        return hsv_u8
+
+    work = hsv_u8.copy()
+    n = int(work.shape[0])
+    min_count = max(30, int(0.18 * n))
+
+    sat = work[:, 1].astype(np.float32)
+    sat_mask = sat >= 30.0
+    if int(np.sum(sat_mask)) >= min_count:
+        work = work[sat_mask]
+
+    v = work[:, 2].astype(np.float32)
+    if int(v.size) == 0:
+        return hsv_u8
+
+    lo = float(np.percentile(v, 20.0))
+    hi = float(np.percentile(v, 85.0))
+    stable = work[(v >= lo) & (v <= hi)]
+    if int(stable.shape[0]) < min_count:
+        lo = float(np.percentile(v, 10.0))
+        hi = float(np.percentile(v, 90.0))
+        stable = work[(v >= lo) & (v <= hi)]
+
+    return stable if int(stable.shape[0]) > 0 else work
+
+
+def material_pixels_from_stable_ring(
+    hsv_image: np.ndarray,
+    x: int,
+    y: int,
+    r_draw: int,
+    ring_inner_ratio: float = 0.45,
+    ring_outer_ratio: float = 0.80,
+) -> np.ndarray:
+    """Sample material colors from stable ring area (exclude center/highlights)."""
+    h_img, w_img = hsv_image.shape[:2]
+    r_outer = int(max(1, round(float(r_draw) * float(ring_outer_ratio))))
+    r_inner = int(max(1, round(float(r_draw) * float(ring_inner_ratio))))
+    r_inner = min(r_inner, max(1, r_outer - 1))
+
+    outer_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+    inner_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+    cv2.circle(outer_mask, (x, y), r_outer, 255, -1)
+    cv2.circle(inner_mask, (x, y), r_inner, 255, -1)
+    ring_mask = cv2.bitwise_and(outer_mask, cv2.bitwise_not(inner_mask))
+
+    pix_ring = hsv_image[ring_mask > 0]
+    if int(pix_ring.shape[0]) < 40:
+        fallback_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+        cv2.circle(fallback_mask, (x, y), max(1, int(r_draw)), 255, -1)
+        pix_ring = hsv_image[fallback_mask > 0]
+
+    return _filter_material_pixels_from_v_band(pix_ring)
+
+
+def material_from_hsv_kmeans_auto(
+    hsv_pixels: np.ndarray,
+    fallback_hsv: tuple[int, int, int],
+) -> dict[str, float | int | str | bool]:
+    """Infer bronze/gold via HSV KMeans with automatic k in {1, 2}."""
+    h_fb = int(fallback_hsv[0])
+    s_fb = int(fallback_hsv[1])
+    v_fb = int(fallback_hsv[2])
+    fallback_label = fallback_material_from_inner_hsv(h_fb, s_fb, v_fb)
+    fallback_bronze = bronze_score_from_inner_hsv(h_fb, s_fb, v_fb)
+    fallback_gold = gold_score_from_inner_hsv(h_fb, s_fb, v_fb)
+
+    if hsv_pixels is None or int(len(hsv_pixels)) < 40:
+        return {
+            "material_label": fallback_label,
+            "bronze_score": float(fallback_bronze),
+            "gold_score": float(fallback_gold),
+            "chosen_k": 1,
+            "k2_gain": 0.0,
+            "bronze_share": 1.0 if fallback_label == "bronze" else 0.0,
+            "gold_share": 1.0 if fallback_label == "gold" else 0.0,
+            "used_fallback": True,
+        }
+
+    hsv = np.asarray(hsv_pixels, dtype=np.float32)
+    n = int(hsv.shape[0])
+
+    h = hsv[:, 0] * (2.0 * np.pi / 180.0)
+    s = hsv[:, 1] / 255.0
+    v = hsv[:, 2] / 255.0
+    hue_weight = np.clip(s, 0.2, 1.0)
+    feats = np.stack([np.cos(h) * hue_weight, np.sin(h) * hue_weight, 0.90 * s, 0.25 * v], axis=1).astype(np.float32)
+
+    if n > 6000:
+        rng = np.random.default_rng(2026)
+        idx = rng.choice(n, size=6000, replace=False)
+        feats_fit = feats[idx]
+    else:
+        feats_fit = feats
+
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 80, 0.02)
+    cv2.setRNGSeed(4242)
+    _, _, centers_1 = cv2.kmeans(feats_fit, 1, None, criteria, 8, cv2.KMEANS_PP_CENTERS)
+    cv2.setRNGSeed(4242)
+    _, _, centers_2 = cv2.kmeans(feats_fit, 2, None, criteria, 8, cv2.KMEANS_PP_CENTERS)
+
+    dist_k1 = np.sum((feats - centers_1[0]) ** 2, axis=1)
+    compact_k1 = float(np.sum(dist_k1))
+
+    d20 = np.sum((feats - centers_2[0]) ** 2, axis=1)
+    d21 = np.sum((feats - centers_2[1]) ** 2, axis=1)
+    labels_k2 = (d21 < d20).astype(np.int32)
+    compact_k2 = float(np.sum(np.minimum(d20, d21)))
+    k2_gain = float((compact_k1 - compact_k2) / max(compact_k1, 1e-9))
+
+    counts_k2 = np.bincount(labels_k2, minlength=2).astype(np.int32)
+    min_count_k2 = int(np.min(counts_k2))
+    min_share_k2 = float(min_count_k2 / max(n, 1))
+    min_count_needed = max(30, int(0.08 * n))
+    use_k2 = bool((k2_gain >= 0.12) and (min_count_k2 >= min_count_needed) and (min_share_k2 >= 0.08))
+
+    if use_k2:
+        chosen_k = 2
+        labels = labels_k2
+    else:
+        chosen_k = 1
+        labels = np.zeros((n,), dtype=np.int32)
+
+    bronze_mass = 0.0
+    gold_mass = 0.0
+    bronze_share = 0.0
+    gold_share = 0.0
+    for cluster_id in range(chosen_k):
+        mask = labels == int(cluster_id)
+        count = int(np.sum(mask))
+        if count <= 0:
+            continue
+        weight = float(count / max(n, 1))
+        center_hsv = mean_hsv_from_pixels(hsv_pixels[mask])
+        h_c, s_c, v_c = int(center_hsv[0]), int(center_hsv[1]), int(center_hsv[2])
+        bronze_c = bronze_score_from_inner_hsv(h_c, s_c, v_c)
+        gold_c = gold_score_from_inner_hsv(h_c, s_c, v_c)
+        bronze_mass += weight * float(bronze_c)
+        gold_mass += weight * float(gold_c)
+
+        cluster_material = fallback_material_from_inner_hsv(h_c, s_c, v_c)
+        if cluster_material == "bronze":
+            bronze_share += weight
+        elif cluster_material == "gold":
+            gold_share += weight
+
+    used_fallback = False
+    if max(bronze_mass, gold_mass) < 0.20:
+        material_label = fallback_label
+        bronze_mass = float(fallback_bronze)
+        gold_mass = float(fallback_gold)
+        used_fallback = True
+    elif abs(bronze_mass - gold_mass) < 0.035:
+        material_label = "bronze" if bronze_share >= gold_share else "gold"
+    else:
+        material_label = "bronze" if bronze_mass > gold_mass else "gold"
+
+    return {
+        "material_label": material_label,
+        "bronze_score": float(np.clip(bronze_mass, 0.0, 1.0)),
+        "gold_score": float(np.clip(gold_mass, 0.0, 1.0)),
+        "chosen_k": int(chosen_k),
+        "k2_gain": float(k2_gain),
+        "bronze_share": float(np.clip(bronze_share, 0.0, 1.0)),
+        "gold_share": float(np.clip(gold_share, 0.0, 1.0)),
+        "used_fallback": bool(used_fallback),
+    }
 
 
 def material_family_from_inner_hsv(inner_hsv: tuple[int, int, int] | list[int]) -> str:
@@ -527,7 +1048,7 @@ def draw_and_analyze_circle_inner_border_colors(
     border_ratio: float = 0.24,
     sat_delta_threshold: float | None = None,
     bimetal_mode: str = "hybrid",
-    material_mode: str = "hsv",
+    material_mode: str = "lab_proto",
 ) -> tuple[np.ndarray, list[dict]]:
     """Core decision algorithm for per-coin material and type labeling.
 
@@ -547,8 +1068,9 @@ def draw_and_analyze_circle_inner_border_colors(
     if bimetal_mode != "hybrid":
         raise ValueError("bimetal_mode must be: 'hybrid'")
     material_mode = str(material_mode).strip().lower()
-    if material_mode != "hsv":
-        raise ValueError("material_mode must be: 'hsv'")
+    valid_material_modes = {"hsv", "hsv_kmeans", "lab_proto"}
+    if material_mode not in valid_material_modes:
+        raise ValueError("material_mode must be one of: 'hsv', 'hsv_kmeans', 'lab_proto'")
 
     output_bgr = image_bgr.copy()
     stats: list[dict] = []
@@ -581,10 +1103,14 @@ def draw_and_analyze_circle_inner_border_colors(
         pix_full_hsv = hsv[outer_mask > 0]
         pix_inner_hsv = hsv[inner_mask > 0]
         pix_border_hsv = hsv[border_mask > 0]
+        pix_material_hsv = material_pixels_from_stable_ring(hsv, x, y, r_draw, ring_inner_ratio=0.45, ring_outer_ratio=0.80)
 
         full_hsv = mean_hsv_from_pixels(pix_full_hsv)
         inner_hsv = mean_hsv_from_pixels(pix_inner_hsv)
         border_hsv = mean_hsv_from_pixels(pix_border_hsv)
+        material_hsv = mean_hsv_from_pixels(pix_material_hsv)
+        material_lab = mean_lab_from_hsv_pixels(pix_material_hsv)
+        hsv_kmeans_material = material_from_hsv_kmeans_auto(pix_material_hsv, material_hsv)
 
         similarity = hsv_similarity_score(inner_hsv, border_hsv)
         sat_delta = abs(float(inner_hsv[1]) - float(border_hsv[1]))
@@ -625,6 +1151,8 @@ def draw_and_analyze_circle_inner_border_colors(
                 "full_hsv": full_hsv,
                 "inner_hsv": inner_hsv,
                 "border_hsv": border_hsv,
+                "material_hsv": material_hsv,
+                "material_lab": material_lab,
                 "full_lab": (0.0, 0.0, 0.0),
                 "inner_lab": (0.0, 0.0, 0.0),
                 "border_lab": (0.0, 0.0, 0.0),
@@ -639,6 +1167,14 @@ def draw_and_analyze_circle_inner_border_colors(
                 "lab_delta": 0.0,
                 "mean_warm_delta": 0.0,
                 "mean_color_delta": 0.0,
+                "material_label_hsv_kmeans": str(hsv_kmeans_material["material_label"]),
+                "bronze_score_hsv_kmeans": float(hsv_kmeans_material["bronze_score"]),
+                "gold_score_hsv_kmeans": float(hsv_kmeans_material["gold_score"]),
+                "color_kmeans_k": int(hsv_kmeans_material["chosen_k"]),
+                "color_kmeans_k2_gain": float(hsv_kmeans_material["k2_gain"]),
+                "color_kmeans_bronze_share": float(hsv_kmeans_material["bronze_share"]),
+                "color_kmeans_gold_share": float(hsv_kmeans_material["gold_share"]),
+                "color_kmeans_used_fallback": bool(hsv_kmeans_material["used_fallback"]),
                 "kmeans_radial_ok": bool(radial_kmeans["ok"]),
                 "kmeans_radial_score": float(radial_kmeans["score"]),
                 "kmeans_radial_sep": float(radial_kmeans["radial_sep"]),
@@ -667,6 +1203,8 @@ def draw_and_analyze_circle_inner_border_colors(
     hybrid_abs_vhi = 30.0
     hybrid_abs_lo = 10.0
 
+    enrich_rows_with_lab_material_labels(rows)
+
     # Pass 2: final deterministic decision with fused evidence.
     for row in rows:
         x = row["x"]
@@ -677,6 +1215,7 @@ def draw_and_analyze_circle_inner_border_colors(
         full_hsv = row["full_hsv"]
         inner_hsv = row["inner_hsv"]
         border_hsv = row["border_hsv"]
+        material_hsv = row["material_hsv"]
 
         color_delta = float(row["color_delta"])
         sat_delta = float(row["sat_delta"])
@@ -790,24 +1329,59 @@ def draw_and_analyze_circle_inner_border_colors(
             gold_score_hsv = 0.0
             gold_score_lab = 0.0
             gold_score_hybrid = 0.0
+            bronze_score_hsv_kmeans = 0.0
+            gold_score_hsv_kmeans = 0.0
             material_label_hsv = "n/a"
             material_label_lab = "n/a"
             material_label_hybrid = "n/a"
+            material_label_hsv_kmeans = "n/a"
+            material_label_lab_scene = "n/a"
+            material_label_lab_proto = "n/a"
             material_label = "n/a"
+            color_kmeans_k = 0
+            color_kmeans_k2_gain = 0.0
+            color_kmeans_bronze_share = 0.0
+            color_kmeans_gold_share = 0.0
+            color_kmeans_used_fallback = False
+            material_lab_scene_conf = 0.0
+            material_lab_proto_conf = 0.0
         else:
             bimetal_euro_label = "n/a"
 
-            bronze_score_hsv = bronze_score_from_inner_hsv(inner_h, inner_s, inner_v)
-            gold_score_hsv = gold_score_from_inner_hsv(inner_h, inner_s, inner_v)
+            material_h = int(material_hsv[0])
+            material_s = int(material_hsv[1])
+            material_v = int(material_hsv[2])
+
+            bronze_score_hsv = bronze_score_from_inner_hsv(material_h, material_s, material_v)
+            gold_score_hsv = gold_score_from_inner_hsv(material_h, material_s, material_v)
             bronze_score_lab = bronze_score_hsv
             gold_score_lab = gold_score_hsv
             bronze_score_hybrid = bronze_score_hsv
             gold_score_hybrid = gold_score_hsv
-            material_label_hsv = label_material_from_inner_hsv(inner_h, inner_s, inner_v)
+            material_label_hsv = label_material_from_inner_hsv(material_h, material_s, material_v)
             material_label_lab = material_label_hsv
-            material_label_hybrid = fallback_material_from_inner_hsv(inner_h, inner_s, inner_v)
-            bronze_score = bronze_score_hsv
-            material_label = material_label_hybrid
+            material_label_hybrid = fallback_material_from_inner_hsv(material_h, material_s, material_v)
+            bronze_score_hsv_kmeans = float(row.get("bronze_score_hsv_kmeans", bronze_score_hsv))
+            gold_score_hsv_kmeans = float(row.get("gold_score_hsv_kmeans", gold_score_hsv))
+            material_label_hsv_kmeans = str(row.get("material_label_hsv_kmeans", material_label_hybrid))
+            material_label_lab_scene = str(row.get("material_label_lab_scene", material_label_hsv_kmeans))
+            material_lab_scene_conf = float(row.get("material_lab_scene_conf", 0.0))
+            material_label_lab_proto = str(row.get("material_label_lab_proto", material_label_hsv_kmeans))
+            material_lab_proto_conf = float(row.get("material_lab_proto_conf", 0.0))
+            color_kmeans_k = int(row.get("color_kmeans_k", 1))
+            color_kmeans_k2_gain = float(row.get("color_kmeans_k2_gain", 0.0))
+            color_kmeans_bronze_share = float(row.get("color_kmeans_bronze_share", 0.0))
+            color_kmeans_gold_share = float(row.get("color_kmeans_gold_share", 0.0))
+            color_kmeans_used_fallback = bool(row.get("color_kmeans_used_fallback", False))
+
+            material_label, bronze_score = pick_material_label_by_mode(
+                material_mode=material_mode,
+                material_label_hybrid=material_label_hybrid,
+                material_label_hsv_kmeans=material_label_hsv_kmeans,
+                material_label_lab_proto=material_label_lab_proto,
+                bronze_score_hsv=bronze_score_hsv,
+                bronze_score_hsv_kmeans=bronze_score_hsv_kmeans,
+            )
 
             if detector_type == "uncertain":
                 final_label = "uncertain"
@@ -871,10 +1445,22 @@ def draw_and_analyze_circle_inner_border_colors(
         row["gold_score_hsv"] = float(gold_score_hsv)
         row["gold_score_lab"] = float(gold_score_lab)
         row["gold_score_hybrid"] = float(gold_score_hybrid)
+        row["bronze_score_hsv_kmeans"] = float(bronze_score_hsv_kmeans)
+        row["gold_score_hsv_kmeans"] = float(gold_score_hsv_kmeans)
         row["material_label_hsv"] = material_label_hsv
         row["material_label_lab"] = material_label_lab
         row["material_label_hybrid"] = material_label_hybrid
+        row["material_label_hsv_kmeans"] = material_label_hsv_kmeans
+        row["material_label_lab_scene"] = material_label_lab_scene
+        row["material_lab_scene_conf"] = float(material_lab_scene_conf)
+        row["material_label_lab_proto"] = material_label_lab_proto
+        row["material_lab_proto_conf"] = float(material_lab_proto_conf)
         row["material_label"] = material_label
+        row["color_kmeans_k"] = int(color_kmeans_k)
+        row["color_kmeans_k2_gain"] = float(color_kmeans_k2_gain)
+        row["color_kmeans_bronze_share"] = float(color_kmeans_bronze_share)
+        row["color_kmeans_gold_share"] = float(color_kmeans_gold_share)
+        row["color_kmeans_used_fallback"] = bool(color_kmeans_used_fallback)
         row["detector_type"] = detector_type
         row["bronze_veto"] = bool(bronze_veto_applied)
         row["bimetal_euro_label"] = bimetal_euro_label

@@ -79,7 +79,8 @@ class PipelineConfig:
     analysis_border_ratio: float = 0.24
     analysis_sat_delta_threshold: float | None = None
     analysis_bimetal_mode: str = "hybrid"
-    analysis_material_mode: str = "hsv"
+    # Available modes: "hsv", "hsv_kmeans", "lab_proto".
+    analysis_material_mode: str = "lab_proto"
     viewer_final_only: bool = True
 
     def get_preset(self, preset_name: str | None = None) -> HoughPreset:

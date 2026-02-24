@@ -12,4 +12,5 @@ class CoinAnalyzerConfig:
     border_ratio: float = 0.24
     sat_delta_threshold: float | None = None
     bimetal_mode: str = "hybrid"
-    material_mode: str = "hsv"
+    # Available modes: "hsv", "hsv_kmeans", "lab_proto".
+    material_mode: str = "lab_proto"

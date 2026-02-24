@@ -281,9 +281,6 @@ class AppRunner:
         value_metrics_table.add_column("Metric", style="bold")
         value_metrics_table.add_column("Value", justify="right")
         value_metrics_table.add_row("Evaluated", str(int(summary["value_evaluated"])))
-        value_metrics_table.add_row("Precision", f"{float(summary.get('value_precision', 0.0)):.2f}%")
-        value_metrics_table.add_row("Recall", f"{float(summary.get('value_recall', 0.0)):.2f}%")
-        value_metrics_table.add_row("F1", f"{float(summary.get('value_f1', 0.0)):.2f}%")
         value_metrics_table.add_row(
             "MAE",
             f"{float(summary['value_mae_eur']):.3f} EUR/image ({float(summary['value_mae_cents']):.1f} cents)",
@@ -304,9 +301,6 @@ class AppRunner:
             group_table.add_column("EVAL", justify="right")
             group_table.add_column("COIN ACC", justify="right")
             group_table.add_column("VAL EVAL", justify="right")
-            group_table.add_column("VAL PREC", justify="right")
-            group_table.add_column("VAL REC", justify="right")
-            group_table.add_column("VAL F1", justify="right")
             group_table.add_column("VAL MAE (EUR)", justify="right")
             group_table.add_column("VAL MSE (EUR^2)", justify="right")
 
@@ -317,9 +311,6 @@ class AppRunner:
                     str(int(row["evaluated"])),
                     f"{float(row['coin_accuracy']):.2f}%",
                     str(int(row["value_evaluated"])),
-                    f"{float(row.get('value_precision', 0.0)):.2f}%",
-                    f"{float(row.get('value_recall', 0.0)):.2f}%",
-                    f"{float(row.get('value_f1', 0.0)):.2f}%",
                     f"{float(row['value_mae_eur']):.2f}",
                     f"{float(row.get('value_mse_eur2', 0.0)):.4f}",
                 )
