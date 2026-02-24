@@ -1,156 +1,189 @@
-# PIPELINE.md  
+# PIPELINE.md
 **Image Processing and Analysis Pipeline – TER M1 (VMI)**
 
-This document describes the planned processing pipeline for the project.  
-The objective is to progressively extract a **Region of Interest (ROI)** from input images using classical computer vision techniques, with a focus on **coin detection**.
+This document describes the current implemented pipeline used by the CLI (`main.py`), not a planned draft.
 
 ---
 
 ## 1. Global Pipeline Overview
 
-The pipeline follows a classical computer vision workflow:
+Runtime flow for one image:
 
-1. Input image acquisition  
-2. Preprocessing  
-3. Grayscale conversion  
-4. Conditional inversion  
-5. Noise reduction  
-6. Foreground–background separation  
-7. ROI extraction  
-8. (Next steps: feature extraction / analysis)
+1. Load image and letterbox-resize to `640x480`
+2. Preprocess (grayscale + configurable blur)
+3. Detect circles with Hough + automatic `minRadius` sweep
+4. Analyze coin color/material (one-color, bi-metal, uncertain)
+5. Estimate denomination/value from per-coin stats
+6. Aggregate metrics and optionally visualize/export debug artifacts
 
-Each step is designed to be modular, reproducible, and adjustable.
+Orchestrator entrypoint: `src/pipeline/orchestrator.py`.
 
 ---
 
-## 2. Step 1 – Image Acquisition
+## 2. Stage A – Input Normalization
 
-**Input:**
-- Raw RGB images stored in `data/images/`
-- Format: PNG / JPG  
-- Resolution may vary
+File: `src/pipeline/orchestrator.py`
 
-**Goal:**
-Ensure all images are readable, correctly loaded, and consistent before processing.
+- Reads image as BGR
+- Resizes with letterbox to fixed canvas (`target_width`, `target_height`)
 
----
+Why:
 
-## 3. Step 2 – Grayscale Conversion
-
-### Description
-Conversion of RGB images to grayscale.
-
-### Justification
-- Reduces computational complexity  
-- Removes color dependency  
-- Coin detection relies primarily on shape and intensity  
-- Simplifies further processing  
-
-Grayscale images preserve luminance information required for segmentation and object extraction.
+- Keeps detector thresholds stable across mixed input resolutions
+- Makes evaluation/debug comparisons consistent
 
 ---
 
-## 4. Step 3 – Image Inversion (Conditional Step)
+## 3. Stage B – Preprocessing
 
-### Purpose
-Invert pixel intensities depending on the contrast configuration between:
-- Coin
-- Background
+File: `src/pipeline/preprocessing.py`
 
-### When inversion SHOULD be applied
-- Coin is darker than background  
-- Coin boundaries are poorly distinguishable  
-- Bright foreground improves separation  
+Current effective preprocessing:
 
-### When inversion SHOULD NOT be applied
-- Coin is already brighter than background  
-- Contrast is sufficient  
-- Inversion increases background noise  
+1. Convert BGR to grayscale
+2. Apply blur (`gauss` or `median`)
 
-### Decision Rule
-Inversion is a **conditional preprocessing step** and should be:
-- Evaluated visually  
-- Applied only if it improves contrast  
-- Used to simplify further segmentation  
+Notes:
 
-### Important Note
-After this step, **the primary objective becomes separating coins from the background**.  
-All subsequent processing is focused on foreground–background separation, not edge detection.
+- CLAHE and histogram normalization fields exist in config for compatibility/debug payload, but are currently disabled by default.
+- Blur stage name is propagated to viewer (`Gaussian Blur` / `Median Blur`).
 
 ---
 
-## 5. Step 4 – Noise Reduction (Median Filtering)
+## 4. Stage C – Circle Detection
 
-### Selected Method: **Median Filter**
+File: `src/pipeline/detectors/circle_detection/coin_detector.py`
 
-### Justification
-Median filtering is preferred over Gaussian and bilateral filtering.
+### 4.1 Adaptive `param1` estimation
 
-### Why NOT Gaussian or Bilateral Filtering
-- Gaussian blur smooths edges and weakens object boundaries  
-- Bilateral filtering:
-  - Is computationally heavier  
-  - Preserves unwanted texture  
-  - Is sensitive to background patterns  
+`param1` (Canny high threshold inside Hough) is inferred from Scharr gradient magnitude percentiles (`auto_hough_param1_from_gradient`).
 
-Textured backgrounds (e.g. wood, surfaces) can strongly affect detection quality.
+### 4.2 Automatic `minRadius` selection
 
-### Advantages of Median Filtering
-- Removes impulse and texture noise  
-- Preserves object boundaries  
-- Reduces background influence  
-- More stable for segmentation  
-- Well-suited for coin-like homogeneous regions  
+The detector sweeps `minRadius` over a configured range and scores each candidate using geometric penalties:
 
----
+- concentric duplicates
+- nested circles
+- severe intrusions
 
-## 6. Step 5 – Foreground / Background Separation
+Then it selects a robust candidate via plateau-like voting (or best fallback when no clean candidate exists).
 
-### Objective
-Isolate coin regions from the background.
+### 4.3 Final detection + overlay
 
-### Goals
-- Suppress background textures  
-- Highlight coin regions  
-- Produce a clean binary or semi-binary representation  
+Final Hough run outputs:
 
-### Possible Techniques
-- HSV Color Filtering  
-- HSV Color Clustering using K-Means
-- Hough circle
-
-No edge detection or morphological processing is applied at this stage.
+- circles (`x, y, r`)
+- `circle_count`
+- debug overlay image
+- sweep diagnostics (`plateau_debug`, `sweep_results`)
 
 ---
 
-## 7. Step 6 – ROI Extraction (Planned)
+## 5. Stage D – Color/Material Analysis
 
-### Goals
-- Detect candidate coin regions  
-- Extract bounding boxes or masks  
-- Filter regions using:
-  - Area  
-  - Shape consistency  
-  - Optional circularity constraints  
+File: `src/pipeline/detectors/color_analysis/coin_analyzer.py`
 
-### Possible Approaches
-- TODO
+Per detected circle:
+
+1. Split pixels into full / inner / border masks
+2. Build a stable material sample ring (`0.45R..0.80R`) and filter V extremes
+3. Compute robust HSV center (circular hue + median S/V)
+4. Compute material cues and structural cues:
+   - HSV delta terms
+   - radial k-means agreement
+   - radial step score
+   - edge roughness score
+
+### Material modes
+
+Configured by `analysis_material_mode`:
+
+- `hsv`: direct heuristic HSV labeling
+- `hsv_kmeans`: per-coin HSV k-means (`k in {1,2}` auto-selected)
+- `lab_proto` (default): image-level Lab prototypes + scene-level Lab clustering, fused by confidence
+
+Output labels include:
+
+- `one-color-like/bronze`
+- `one-color-like/gold`
+- `1-euro-like`, `2-euro-like`
+- `uncertain`
+
+Rich per-coin diagnostics are saved into `split_stats`.
 
 ---
 
-## 8. Next Steps
+## 6. Stage E – Denomination and Value Estimation
 
-- ROI validation  
-- Feature extraction  
-- Measurement or classification  
-- Performance evaluation  
-- Visualization and reporting  
+Files:
+
+- `src/pipeline/detectors/valuation/coin_value_estimator.py`
+- `src/pipeline/detectors/valuation/value_estimator.py`
+
+Process:
+
+1. Infer family (`bronze`, `gold`, `bimetal`, `unknown`) from analyzed coin row
+2. Estimate `px_per_mm` scale (bimetal reference + fallback voting)
+3. Cluster radii per family
+4. Score denomination probabilities
+5. Produce:
+   - per-coin best denomination/probability
+   - family models and scale debug info
+   - denomination counts
+   - total value in cents
 
 ---
 
-## 9. Notes
+## 7. Stage F – Evaluation and Viewer
 
-- Each step is implemented as a separate module  
-- Parameters are configurable  
-- Intermediate results may be saved for debugging  
-- The pipeline is designed to be reproducible and extensible  
+CLI file: `src/app/cli.py`  
+Viewer file: `src/ui/debug_viewer.py`
+
+Evaluation:
+
+- Coin exact-match accuracy
+- Value MAE / MSE
+- Per-group summary
+- CSV report (`reports/evaluation_rows.csv` by default)
+
+Viewer:
+
+- Browse images and pipeline steps
+- Toggle final-only mode
+- Export current debug snapshot (`.json` + `.txt`)
+
+---
+
+## 8. Debug Export Format
+
+File: `src/common/debug_export.py`
+
+Export payload contains:
+
+- source/relative path
+- current viewer step metadata
+- coin/value metrics
+- Hough params
+- compact per-coin predictions
+- full raw debug payload (`split_stats`, family models, scale info, etc.)
+
+Saved under `debug_exports/<group>/` as:
+
+- `<stem>_debug_final.json|txt` (final-only mode)
+- `<stem>_debug_sXX.json|txt` (full pipeline mode)
+
+---
+
+## 9. Main Configuration Knobs
+
+File: `src/pipeline/config.py`
+
+Key defaults:
+
+- Hough preset: `test1`
+- blur mode: `gauss`
+- `analysis_bimetal_mode`: `hybrid`
+- `analysis_material_mode`: `lab_proto`
+- viewer default: final-only
+
+All values are centralized in `PipelineConfig` and injected through the orchestrator.
