@@ -40,10 +40,10 @@ source .venv/bin/activate
 
 ### 2. Install dependencies
 
-`requirements.txt` is not included yet, install manually:
+Install project dependencies:
 
 ```bash
-pip install numpy opencv-python matplotlib rich
+pip install -r requirements.txt
 ```
 
 Python `3.10+` is recommended.
